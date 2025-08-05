@@ -26,7 +26,7 @@ from tqdm import tqdm
 import psutil
 import vapoursynth as vs
 
-from encode import Encoder
+# from encode import Encoder
 
 IS_WINDOWS = platform.system() == 'Windows'
 NULL_DEVICE = 'NUL' if IS_WINDOWS else '/dev/null'
