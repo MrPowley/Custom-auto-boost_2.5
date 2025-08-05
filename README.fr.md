@@ -1,6 +1,6 @@
 # Custom Auto-Boost_2.5
-[![lang - EN](https://img.shields.io/badge/lang-EN-d5372d?style=for-the-badge)](readme.md)
-[![lang - FR](https://img.shields.io/badge/lang-FR-2d3181?style=for-the-badge)](readme.fr.md)
+[![lang - EN](https://img.shields.io/badge/lang-EN-d5372d?style=for-the-badge)](README.md)
+[![lang - FR](https://img.shields.io/badge/lang-FR-2d3181?style=for-the-badge)](README.fr.md)
 
 Ce projet est une version modifiée du projet [auto-boost-algorithm](https://github.com/nekotrix/auto-boost-algorithm) version 2.5 de [nekotrix](https://github.com/nekotrix).
 
