@@ -1,0 +1,63 @@
+# Custom Auto-Boost_2.5
+[![lang - EN](https://img.shields.io/badge/lang-EN-d5372d?style=for-the-badge)](readme.md)
+[![lang - FR](https://img.shields.io/badge/lang-FR-2d3181?style=for-the-badge)](readme.fr.md)
+
+Ce projet est une version modifiée du projet [auto-boost-algorithm](https://github.com/nekotrix/auto-boost-algorithm) version 2.5 de [nekotrix](https://github.com/nekotrix).
+
+## Version 2.5 : Basé sur SSIMULACRA2 & XPSNR
+
+Dépendances :
+- [Vapoursynth](https://github.com/vapoursynth/vapoursynth)
+- LSMASHSource
+- [Av1an](https://github.com/rust-av/Av1an/)
+- [vszip](https://github.com/dnjulek/vapoursynth-zip)
+- tqdm
+- psutil
+- [mkvmerge](https://www.matroska.org/index.html)
+  
+Optionellement :
+- ffmpeg compilé avec support XPSNR
+- [turbo-metrics](https://github.com/Gui-Yom/turbo-metrics)
+
+# Changements notables de l'original
+- Ajouté une barre de progression pour turbo-metrics
+- Ajouté une étape 4 pour un encodage final avec Av1an
+
+# Todo, fonctionnalités
+- (En cours) Ajouter un framework d'encodage fait maison (Alternative à Av1an), parce que pourquoi pas
+- Pouvoir ajuster plus précisément l'agressivité
+- Enlever la dépendance à ffmpeg en utilisant l'implémentation xpsnr de vs-zip
+- Améliorer le CLI
+- (Peut-être) Ajouter un TUI
+- (Un jour) Ajouter un GUI
+
+# Todo, code
+- Rendre/Maintenir le code complètement conforme au [pep8](https://peps.python.org/pep-0008/)
+- Refactoriser le code pour avoir une architecture Controller-Model-View
+
+# Utilisation
+|Paramètre|Valeur par défaut|Valeurs possibles|Explication|
+|---|---|---|---|
+|`-i, --input`|||Chemin de la vidéo|
+|`-t, --temp`|Nom de la vidéo||Dossier temporaire|
+|`-s, --stage`|`0`|`0`, `1`, `2`, `3`, `4`|Étape de boost (Tout, passe rapide, calcul des métriques, calcul des zones, encodage final)|
+|`-crf`|`30`|`1`-`63`|CRF à utiliser|
+|`-d, -deviation`|`10`|`0`-`63`|Écart maximum du CRF de base|
+|`--max-positive-dev`||`0`-`63`|Écart maximum positif du CRF de base|
+|`--max-negative-dev`||`0`-`63`|Écart maximum négatif du CRF de base|
+|`-p, --preset`|`8`|`-1`-`13`|Preset SVT-AV1 à utiliser|
+|`-w, --workers`|Nombre de coeurs CPU| `1`-`Any`|Nombre de workers Av1an|
+|`-S, --skip`|`1` (GPU), `3` (CPU)|`1`-`Any`|Calculer le score toutes les X images|
+|`-m, --method`|`1`|`1`, `2`, `3`, `4`|Méthode de calcul des zones(1: SSIMU2, 2: XPSNR, 3: Multiplié, 4: Minimum)|
+|`-a, --aggressive`|Pas actif||Boost plus agressif|
+|`-cpu, --force-cpu`|Pas actif||Forcer l'utilisation du CPU pour le calcul SSIMU2|
+|`-gpu, --hwaccel`|`turbo-metrics`|`turbo-metrics`, `vship`|Framework de calcul SSIMUM2 avec acceleration matérielle|
+|`-v --video-params`|||Paramètres d'encodeur pour Av1an|
+|`-ef, --encoder-framework`|`av1an`|`av1an`|Framework d'encodage à utiliser|
+|`-o, --output`|Dossier de la vidéo original||Fichier de sortie pour l'encodage final|
+
+---
+
+_Ce projet est basé sur le travail original de **nekotrix**._  
+_Les contributeurs originaux incluent **R1chterScale**, **Yiss**, **Kosaka**, et d'autres._  
+_License MIT, voir LICENSE._
