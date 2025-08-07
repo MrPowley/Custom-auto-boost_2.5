@@ -327,7 +327,7 @@ def calculate_std_dev(score_list: list[int]):
 def generate_zones(ranges: list[int], percentile_5_total: list[float], average: float,
                    crf: float, zones_txt_path: Path, video_params: str,
                    max_pos_dev: float | None, max_neg_dev: float | None,
-                   base_deviation: float, aggressive: bool, workers: int):
+                   base_deviation: float, aggressiveness: float, workers: int):
     """
     Appends a scene change to the ``zones_txt_path`` file in Av1an zones format.
 
@@ -359,7 +359,7 @@ def generate_zones(ranges: list[int], percentile_5_total: list[float], average: 
         zones_iter += 1
 
         # Calculate CRF adjustment using aggressive or normal multiplier
-        multiplier = 40 if aggressive else 20
+        multiplier = aggressiveness
         adjustment = ceil((1.0 - (percentile_5_total[i] / average)) * multiplier * 4) / 4
         new_crf = crf - adjustment
 
@@ -417,7 +417,7 @@ def calculate_metrics(src_file: Path, output_file: Path, tmp_dir: Path,
 def calculate_zones(src_file: Path, tmp_dir: Path, ranges: list[int],
                     method: int, cq: float, video_params: str,
                     max_pos_dev: float|None, max_neg_dev: float|None,
-                    base_deviation: float, aggressive: bool, workers: int):
+                    base_deviation: float, aggressiveness: float, workers: int):
     match method:
         case 1 | 2:
             if method == 1:
@@ -452,7 +452,7 @@ def calculate_zones(src_file: Path, tmp_dir: Path, ranges: list[int],
             # print(f'95th Percentile: {metric_percentile_95}')
             generate_zones(ranges, metric_percentile_5_total, metric_average, cq,
                            metric_zones_txt_path, video_params, max_pos_dev, max_neg_dev,
-                           base_deviation, aggressive, workers)
+                           base_deviation, aggressiveness, workers)
 
         case 3 | 4:
             if method == 3:
@@ -502,7 +502,7 @@ def calculate_zones(src_file: Path, tmp_dir: Path, ranges: list[int],
             # print(f'95th Percentile:  {calculation_percentile_95}\n')
             generate_zones(ranges, calculation_percentile_5_total, calculation_average, cq,
                            calculation_zones_txt_path,video_params, max_pos_dev, max_neg_dev,
-                           base_deviation,aggressive, workers)
+                           base_deviation,aggressiveness, workers)
 
 
 def parse_args() -> argparse.Namespace:
@@ -537,8 +537,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("-m", "--method",type=int, default=1, choices=[1, 2, 3, 4],
                         help="Zones calculation method: 1 = SSIMU2, 2 = XPSNR,"
                         " 3 = Multiplication, 4 = Lowest Result (Default: 1)")
-    parser.add_argument("-a", "--aggressive", action='store_true',
-                        help="More aggressive boosting (Default: not active)")
+    parser.add_argument("-a", "--aggressiveness", type=float, default=20.0,
+                        help="Choose aggressiveness, use 40 for more aggressive (Default: 20.0)")
     parser.add_argument("-cpu", "--force-cpu", action='store_true',
                         help="Force the use of vs-zip (CPU)" \
                         " for SSIMULARA2 calculation (Default: not active)")
@@ -594,7 +594,7 @@ def main():
     base_deviation: float = args.deviation
     max_pos_dev: float|None = args.max_positive_dev
     max_neg_dev: float|None = args.max_negative_dev
-    aggressive: bool = args.aggressive
+    aggressiveness: float = args.aggressiveness
 
     force_cpu: bool = args.force_cpu
     hwaccel, default_skip = resolve_hwaccel(force_cpu, args.hwaccel, core)
@@ -630,7 +630,7 @@ def main():
             fast_pass(src_file, fastpass_file, tmp_dir, scenes_file, preset, crf, workers, video_params)
             ranges = get_ranges(scenes_file)
             calculate_metrics(src_file, fastpass_file, tmp_dir, skip, method, hwaccel)
-            calculate_zones(src_file, tmp_dir, ranges, method, crf, video_params, max_pos_dev, max_neg_dev, base_deviation, aggressive, workers)
+            calculate_zones(src_file, tmp_dir, ranges, method, crf, video_params, max_pos_dev, max_neg_dev, base_deviation, aggressiveness, workers)
             encode_av1an(src_file, output_file, zones_path, f"--preset {preset} --lp 2 {" ".join(video_params.split())}",
                          workers)
         case 1:
@@ -639,7 +639,7 @@ def main():
             calculate_metrics(src_file, fastpass_file, tmp_dir, skip, method, hwaccel)
         case 3:
             ranges = get_ranges(scenes_file)
-            calculate_zones(src_file, tmp_dir, ranges, method, crf, video_params, max_pos_dev, max_neg_dev, base_deviation, aggressive, workers)
+            calculate_zones(src_file, tmp_dir, ranges, method, crf, video_params, max_pos_dev, max_neg_dev, base_deviation, aggressiveness, workers)
         case 4:
             encode_av1an(src_file, output_file, zones_path,
                              f"--preset {preset} --lp 2 {" ".join(video_params.split())}", workers)
