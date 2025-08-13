@@ -308,7 +308,28 @@ def get_ssimu2(ssimu2_json_path) -> tuple[list[float], int]:
 
     return ssimu2_scores, skip
 
-def calculate_std_dev(score_list: list[int]):
+def calculate_percentile(scores: list[float], percentile: int) -> float:
+    """Inputs a sorted score list and output the 5th percentile"""
+    if 0 >= percentile > 100:
+        raise ValueError("Invalid 'percentile' value")
+
+    scores_length = len(scores)
+
+    fith_percent_index = percentile/100 * (scores_length + 1) - 1
+    frac_part = fith_percent_index % 1.0
+
+    lower_value = scores[int(fith_percent_index)]
+
+    if frac_part == 0:
+        percentile_value: float = lower_value
+    else:
+        upper_index = min(int(ceil(fith_percent_index)), scores_length - 1)
+        upper_value = scores[upper_index]
+        percentile_value: float = lower_value + frac_part * (upper_value - lower_value)
+
+    return percentile_value
+
+def calculate_std_dev(score_list: list[float]) -> tuple[float, float, float]:
     """
     Takes a list of metrics scores and returns the associated arithmetic mean,
     5th percentile and 95th percentile scores.
@@ -318,10 +339,12 @@ def calculate_std_dev(score_list: list[int]):
     """
 
     filtered_score_list = [score if score >= 0 else 0.0 for score in score_list]
-    sorted_score_list = sorted(filtered_score_list)
+    sorted_score_list = sorted(score_list)
+
+    percentile_5 = calculate_percentile(sorted_score_list, 5)
+    percentile_95 = calculate_percentile(sorted_score_list, 95)
     average = sum(filtered_score_list)/len(filtered_score_list)
-    percentile_5 = sorted_score_list[len(filtered_score_list)//20]
-    percentile_95 = sorted_score_list[int (len(filtered_score_list)//(20/19))]
+
     return average, percentile_5, percentile_95
 
 def generate_zones(ranges: list[int], percentile_5_total: list[float], average: float,
