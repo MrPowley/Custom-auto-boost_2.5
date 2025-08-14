@@ -461,41 +461,40 @@ def calculate_zones(src_file: Path, tmp_dir: Path, ranges: list[int],
             xpsnr_scores, _ = get_xpsnr(xpsnr_json_path)
 
             calculation_zones_txt_path = tmp_dir / f"{method_name}_zones.txt"
-            calculation_total_scores: list[int] = []
-            calculation_percentile_5_total = []
-            calculation_iter = 0
+
             if method_name == 'minimum':
-                ssimu2_average, ssimu2_percentile_5, ssimu2_percentile_95 = calculate_std_dev(ssimu2_scores)
-            for i in range(len(ranges)-1):
-                calculation_chunk_scores: list[int] = []
-                ssimu2_frames = (ranges[i + 1] - ranges[i]) // skip
-                for frames in range(ssimu2_frames):
-                    ssimu2_score = ssimu2_scores[calculation_iter]
-                    xpsnr_index = (skip * frames) + ranges[i] + 1
-                    xpsnr_scores_averaged = 0
-                    for avg_index in range(skip):
-                        xpsnr_scores_averaged += xpsnr_scores[xpsnr_index + avg_index - 1]
-                    xpsnr_scores_averaged /= skip
-                    if method_name == 'multiplied':
-                        calculation_score = xpsnr_scores_averaged * ssimu2_score
-                    elif method_name == 'minimum':
-                        xpsnr_scores_averaged *= ssimu2_average
-                        calculation_score = min(ssimu2_score, xpsnr_scores_averaged)
+                ssimu2_average, _, _ = calculate_std_dev(ssimu2_scores)
 
-                    calculation_chunk_scores.append(calculation_score)
-                    calculation_total_scores.append(calculation_score)
-                    calculation_iter += 1
-                calculation_average, calculation_percentile_5, calculation_percentile_95 = calculate_std_dev(
-                    calculation_chunk_scores)
-                calculation_percentile_5_total.append(calculation_percentile_5)
-            calculation_average, calculation_percentile_5, calculation_percentile_95 = calculate_std_dev(
-                calculation_total_scores)
+            total_scores = []
+            percentile_5_total = []
+            for i in range(len(ranges) - 1):
+                chunk_ssimu2_scores: list[float] = ssimu2_scores[ranges[i]:ranges[i+1]]
+                chunk_xpsnr_scores: list[float] = xpsnr_scores[ranges[i]:ranges[i+1]]
+                # chunk_xpsnr_average: float = sum(chunk_xpsnr_scores) / len(chunk_xpsnr_scores)
+                chunk_scores = []
+                for i, ssimu2_score in enumerate(chunk_ssimu2_scores):
+                    if skip > 1 and i%skip == 0:
+                        scores = chunk_xpsnr_scores[i:skip]
+                        xpsnr_score = sum(scores) / len(scores)
+                    else:
+                        xpsnr_score = chunk_xpsnr_scores[i]
 
+                    if method_name == "multiplied":
+                        chunk_scores.append(ssimu2_score * xpsnr_score)
+                    elif method_name == "minimum":
+                        chunk_scores.append(min(ssimu2_score, ssimu2_average * xpsnr_score))
+
+                total_scores += chunk_scores
+                _, chunk_percentile_5, _ = calculate_std_dev(chunk_scores)
+                percentile_5_total.append(chunk_percentile_5)
+
+            calculation_average, _, _ = calculate_std_dev(total_scores)
+            
             # print(f'Minimum:')
             # print(f'Median score:  {calculation_average}')
             # print(f'5th Percentile:  {calculation_percentile_5}')
             # print(f'95th Percentile:  {calculation_percentile_95}\n')
-            generate_zones(ranges, calculation_percentile_5_total, calculation_average, cq,
+            generate_zones(ranges, percentile_5_total, calculation_average, cq,
                            calculation_zones_txt_path,video_params, max_pos_dev, max_neg_dev,
                            base_deviation,aggressiveness, workers)
 
