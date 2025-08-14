@@ -22,6 +22,7 @@ Optionellement :
 # Changements notables de l'original
 - Ajouté une barre de progression pour turbo-metrics
 - Ajouté une étape 4 pour un encodage final avec Av1an
+- (Techniquement plus précis avec une faible marge)
 
 # Todo, fonctionnalités
 - (En cours) Ajouter un framework d'encodage fait maison (Alternative à Av1an), parce que pourquoi pas
@@ -49,7 +50,7 @@ Optionellement :
 |`-w, --workers`|Nombre de coeurs CPU| `1`-`Any`|Nombre de workers Av1an|
 |`-S, --skip`|`1` (GPU), `3` (CPU)|`1`-`Any`|Calculer le score toutes les X images|
 |`-m, --method`|`1`|`1`, `2`, `3`, `4`|Méthode de calcul des zones(1: SSIMU2, 2: XPSNR, 3: Multiplié, 4: Minimum)|
-|`-a, --aggressive`|Pas actif||Boost plus agressif|
+|`-a, --aggressiveness`|`20` ou `40`|`0` - `Any`|Choisir l'agréssivité du boost|
 |`-cpu, --force-cpu`|Pas actif||Forcer l'utilisation du CPU pour le calcul SSIMU2|
 |`-gpu, --hwaccel`|`turbo-metrics`|`turbo-metrics`, `vship`|Framework de calcul SSIMUM2 avec acceleration matérielle|
 |`-v --video-params`|||Paramètres d'encodeur pour Av1an|

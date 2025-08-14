@@ -22,6 +22,7 @@ Optionally:
 # Notable changes from original
 - Added a progressbar to the turbo-metrics calculation
 - Added a stage 4 for a final encode with Av1an
+- (Technically more accurate by a small margin)
 
 # Todo, functionality
 - (WIP) Add a home-made encoding framework (alternative to Av1an), because why not
@@ -49,7 +50,7 @@ Optionally:
 |`-w, --workers`|CPU core count| `1`-`Any`|Number of Av1an workers|
 |`-S, --skip`|`1` (GPU), `3` (CPU)|`1`-`Any`|Calculate metrics every X frames|
 |`-m, --method`|`1`|`1`, `2`, `3`, `4`|Zones calculation method (1: SSIMU2, 2: XPSNR, 3: Multiplied, 4: Minimum)|
-|`-a, --aggressive`|Not active||More aggressive boosting|
+|`-a, --aggressiveness`|`20` or `40`|`0` - `Any`|Choose boosting aggressiveness|
 |`-cpu, --force-cpu`|Not active||Force the use of CPU for SSIMU2 calculation|
 |`-gpu, --hwaccel`|`turbo-metrics`|`turbo-metrics`, `vship`|SSIMU2 hwaccel calculation framework|
 |`-v --video-params`|||Encoder parameters for Av1an|
