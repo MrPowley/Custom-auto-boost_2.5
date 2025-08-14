@@ -308,7 +308,7 @@ def get_ssimu2(ssimu2_json_path) -> tuple[list[float], int]:
 
     return ssimu2_scores, skip
 
-def calculate_std_dev(score_list: list[int]):
+def calculate_std_dev(score_list: list[float]):
     """
     Takes a list of metrics scores and returns the associated arithmetic mean,
     5th percentile and 95th percentile scores.
@@ -430,27 +430,22 @@ def calculate_zones(src_file: Path, tmp_dir: Path, ranges: list[int],
                 metric_scores, skip = get_xpsnr(metric_json_path)
 
             metric_zones_txt_path = tmp_dir / f'{metric}_zones.txt'
-            metric_total_scores = []
-            metric_percentile_5_total = []
-            metric_iter = 0
 
+            total_scores = []
+            percentile_5_total = []
             for i in range(len(ranges) - 1):
-                metric_chunk_scores = []
-                metric_frames = (ranges[i + 1] - ranges[i]) // skip
-                for frames in range(metric_frames):
-                    metric_score = metric_scores[metric_iter]
-                    metric_chunk_scores.append(metric_score)
-                    metric_total_scores.append(metric_score)
-                    metric_iter += 1
-                metric_average, metric_percentile_5, metric_percentile_95 = calculate_std_dev(metric_chunk_scores)
-                metric_percentile_5_total.append(metric_percentile_5)
-            metric_average, metric_percentile_5, metric_percentile_95 = calculate_std_dev(metric_total_scores)
+                chunk_scores = metric_scores[ranges[i]:ranges[i+1]]
+                _, chunk_percentile_5, _ = calculate_std_dev(chunk_scores)
+                percentile_5_total.append(chunk_percentile_5)
+                total_scores += chunk_scores
+
+            metric_average, _, _ = calculate_std_dev(total_scores)
 
             # print(f'{metric}')
             # print(f'Median score: {metric_average}')
             # print(f'5th Percentile: {metric_percentile_5}')
             # print(f'95th Percentile: {metric_percentile_95}')
-            generate_zones(ranges, metric_percentile_5_total, metric_average, cq,
+            generate_zones(ranges, percentile_5_total, metric_average, cq,
                            metric_zones_txt_path, video_params, max_pos_dev, max_neg_dev,
                            base_deviation, aggressiveness, workers)
 
