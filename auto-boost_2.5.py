@@ -15,12 +15,12 @@
 from math import ceil, floor
 from pathlib import Path
 import json
-import os
+# import os
 import subprocess
-import re
+# import re
 import argparse
 import shutil
-import platform
+# import platform
 
 from tqdm import tqdm
 import psutil
@@ -28,8 +28,8 @@ import vapoursynth as vs
 
 # from encode import Encoder
 
-IS_WINDOWS = platform.system() == 'Windows'
-NULL_DEVICE = 'NUL' if IS_WINDOWS else '/dev/null'
+# IS_WINDOWS = platform.system() == 'Windows'
+# NULL_DEVICE = 'NUL' if IS_WINDOWS else '/dev/null'
 
 core = vs.core
 core.max_cache_size = 1024
@@ -258,25 +258,16 @@ def calculate_xpsnr(src_file: Path, enc_file: Path, xpsnr_json_path: Path,
         json.dump({"skip": skip,"xpsnr": scores}, file)
     return None
 
-def get_xpsnr(xpsnr_json_path) -> tuple[list[float], int]:
-    xpsnr_scores: list[float] = []
+def get_metric(json_path: Path, metric: str) -> tuple[list[float], int]:
+    """Reads from a json file and returns the metric scores and skip values"""
+    scores: list[float] = []
 
-    with xpsnr_json_path.open("r") as file:
+    with json_path.open("r") as file:
         content = json.load(file)
         skip: int = content["skip"]
-        xpsnr_scores = content["xpsnr"]
+        scores = content[metric]
 
-    return xpsnr_scores, skip
-
-def get_ssimu2(ssimu2_json_path) -> tuple[list[float], int]:
-    ssimu2_scores: list[float] = []
-
-    with ssimu2_json_path.open("r") as file:
-        content = json.load(file)
-        skip: int = content["skip"]
-        ssimu2_scores = content["ssimulacra2"]
-
-    return ssimu2_scores, skip
+    return scores, skip
 
 def calculate_percentile(scores: list[float], percentile: int) -> float:
     """Inputs a sorted score list and output the 5th percentile"""
@@ -393,7 +384,7 @@ def generate_zones(ranges: list[int], percentile_5_total: list[float], average: 
 
 def calculate_metrics(src_file: Path, output_file: Path, tmp_dir: Path,
                       skip: int, method: int, hwaccel: str|None):
-    ssimu2_json_path = tmp_dir / f"{src_file.stem}_ssimu2.json"
+    ssimu2_json_path = tmp_dir / f"{src_file.stem}_ssimulacra2.json"
     xpsnr_json_path = tmp_dir / f"{src_file.stem}_xpsnr.json"
 
     match method:
@@ -412,13 +403,12 @@ def calculate_zones(src_file: Path, tmp_dir: Path, ranges: list[int],
     match method:
         case 1 | 2:
             if method == 1:
-                metric = 'ssimu2'
-                metric_json_path = tmp_dir / f'{src_file.stem}_{metric}.json'
-                metric_scores, skip = get_ssimu2(metric_json_path)
+                metric = 'ssimulacra2'
             else:
                 metric = 'xpsnr'
-                metric_json_path = tmp_dir / f'{src_file.stem}_{metric}.json'
-                metric_scores, skip = get_xpsnr(metric_json_path)
+            
+            metric_json_path = tmp_dir / f'{src_file.stem}_{metric}.json'
+            metric_scores, skip = get_metric(metric_json_path, metric)
 
             metric_zones_txt_path = tmp_dir / f'{metric}_zones.txt'
 
@@ -455,10 +445,10 @@ def calculate_zones(src_file: Path, tmp_dir: Path, ranges: list[int],
             else:
                 method_name = 'minimum'
 
-            ssimu2_json_path = tmp_dir / f"{src_file.stem}_ssimu2.json"
-            ssimu2_scores, skip = get_ssimu2(ssimu2_json_path)
+            ssimu2_json_path = tmp_dir / f"{src_file.stem}_ssimulacra2.json"
+            ssimu2_scores, skip = get_metric(ssimu2_json_path, "ssimulacra2")
             xpsnr_json_path = tmp_dir / f"{src_file.stem}_xpsnr.json"
-            xpsnr_scores, _ = get_xpsnr(xpsnr_json_path)
+            xpsnr_scores, _ = get_metric(xpsnr_json_path, "xpsnr")
 
             calculation_zones_txt_path = tmp_dir / f"{method_name}_zones.txt"
 
