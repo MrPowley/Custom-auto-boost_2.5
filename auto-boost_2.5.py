@@ -91,7 +91,7 @@ def fast_pass(
     fast_av1an_command = [
         'av1an',
         '-i', str(input_file),
-        '--temp', tmp_dir,
+        '--temp', str(tmp_dir),
         '-y',
         '--verbose',
         '--keep',
@@ -262,7 +262,7 @@ def get_metric(json_path: Path, metric: str) -> tuple[list[float], int]:
     """Reads from a json file and returns the metric scores and skip values"""
     scores: list[float] = []
 
-    with json_path.open("r") as file:
+    with open(json_path, "r") as file:
         content = json.load(file)
         skip: int = content["skip"]
         scores = content[metric]
