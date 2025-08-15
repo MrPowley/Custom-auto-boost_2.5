@@ -210,12 +210,12 @@ def calculate_ssimu2(src_file: Path, enc_file: Path, ssimu2_json_path: Path,
                 result = core.vship.SSIMULACRA2(cut_source_clip, cut_encoded_clip)
             except AttributeError:
                 print("vship failed\nFalling back to vs-zip")
-                result = core.vszip.Metrics(cut_source_clip, cut_encoded_clip, mode=0)
+                result = core.vszip.SSIMULACRA2(cut_source_clip, cut_encoded_clip)
         else:
-            result = core.vszip.Metrics(cut_source_clip, cut_encoded_clip, mode=0)
+            result = core.vszip.SSIMULACRA2(cut_source_clip, cut_encoded_clip)
 
         for frame in result.frames():
-            score = frame.props['_SSIMULACRA2']
+            score = frame.props['SSIMULACRA2']
             scores.append(score)
             pbar.update(skip)
 
@@ -223,80 +223,50 @@ def calculate_ssimu2(src_file: Path, enc_file: Path, ssimu2_json_path: Path,
         json.dump({"skip": skip,"ssimulacra2": scores}, file)
     return None
 
-def calculate_xpsnr(src_file: Path, enc_file: Path, xpsnr_json_path: Path) -> None:
-    if IS_WINDOWS:
-        xpsnr_tmp_stats_path = Path("xpsnr.log")
-        src_file_dir = src_file.parent
-        os.chdir(src_file_dir)
+def calculate_xpsnr(src_file: Path, enc_file: Path, xpsnr_json_path: Path,
+                     skip: int):
+    is_vpy = src_file.suffix == ".vpy"
+    vpy_vars = {}
+    if is_vpy:
+        exec(open(src_file).read(), globals(), vpy_vars)
+
+    source_clip = core.lsmas.LWLibavSource(source=src_file, cache=0) if not is_vpy else vpy_vars["clip"]
+    encoded_clip = core.lsmas.LWLibavSource(source=enc_file, cache=0)
+
+    if skip > 1:
+        cut_source_clip = source_clip.std.SelectEvery(cycle=skip, offsets=1)
+        cut_encoded_clip = encoded_clip.std.SelectEvery(cycle=skip, offsets=1)
     else:
-        xpsnr_tmp_stats_path = Path("xpsnr.log")
+        cut_source_clip = source_clip
+        cut_encoded_clip = encoded_clip
 
-    xpsnr_command = [
-        'ffmpeg',
-        '-i', src_file,
-        '-i', enc_file,
-        '-lavfi', f'xpsnr=stats_file={str(xpsnr_tmp_stats_path)}',
-        '-f', 'null', NULL_DEVICE
-    ]
-
-    source_clip = core.lsmas.LWLibavSource(source=src_file, cache=0)
-
-    # print(f'source: {len(source_clip)} frames')
-    # print(f'encode: {len(encoded_clip)} frames')
+    scores = []
 
     # smoothing : 0.0 -> 1.0 (Average -> Realtime) (Default: 0.3)
-    with tqdm(total=floor(len(source_clip)), desc='Calculating XPSNR scores',
-              unit=' frames', smoothing=0) as pbar:
-        try:
-            xpsnr_process = subprocess.Popen(xpsnr_command, stdout=subprocess.PIPE,
-                                             stderr=subprocess.STDOUT,universal_newlines=True)
-            for line in xpsnr_process.stdout:
-                match = re.search(r'frame=\s*(\d+)', line)
-                if match:
-                    current_frame_progress = int(match.group(1))
-                    pbar.n = current_frame_progress
-                    pbar.refresh()
+    with tqdm(total=len(source_clip), desc=f'Calculating XPSNR scores', unit=" frames", smoothing=0) as pbar:
+        result = core.vszip.XPSNR(cut_source_clip, cut_encoded_clip)
 
-        except subprocess.CalledProcessError as e:
-            print(f'XPSNR encountered an error:\n{e}')
-            exit(-2)
-
-    values_weighted = evaluate_xpsnr_log(xpsnr_tmp_stats_path)
+        for frame in result.frames():
+            y = frame.props['XPSNR_Y'] if frame.props['XPSNR_Y'] != float("inf") else 100.0
+            u = frame.props['XPSNR_U'] if frame.props['XPSNR_U'] != float("inf") else 100.0
+            v = frame.props['XPSNR_V'] if frame.props['XPSNR_V'] != float("inf") else 100.0
+            w = (4 * y + u + v) / 6
+            
+            scores.append(w)
+            pbar.update(skip)
     with open(xpsnr_json_path, "w") as file:
-        json.dump({"skip": 1, "xpsnr": values_weighted}, file)
-
-    xpsnr_tmp_stats_path.unlink()
-
+        json.dump({"skip": skip,"xpsnr": scores}, file)
     return None
 
-def evaluate_xpsnr_log(xpsnr_log_path: Path) -> list[float]:
-    values_weighted: list[float] = []
-    with open(xpsnr_log_path, "r") as file:
-        for line in file.readlines():
-            match = re.search(
-                r"XPSNR [yY]: ([0-9]+\.[0-9]+|inf)  XPSNR [uU]: ([0-9]+\.[0-9]+|inf)  XPSNR [vV]: ([0-9]+\.[0-9]+|inf)",
-                line)
-            if match:
-                y = float(match.group(1)) if match.group(1) != 'inf' else 100.0
-                u = float(match.group(2)) if match.group(2) != 'inf' else 100.0
-                v = float(match.group(3)) if match.group(3) != 'inf' else 100.0
-                w = (4 * y + u + v) / 6
-                values_weighted.append(w)
+def get_xpsnr(xpsnr_json_path) -> tuple[list[float], int]:
+    xpsnr_scores: list[float] = []
 
-    average_weighted = sum(values_weighted) / len(values_weighted)
-
-    values_weighted_averaged = [value_weighted / average_weighted
-                                for value_weighted in values_weighted]
-
-    return values_weighted_averaged
-
-def get_xpsnr(xpsnr_json_path: Path) -> tuple[list[float], int]:
-    with open(xpsnr_json_path, "r") as file:
+    with xpsnr_json_path.open("r") as file:
         content = json.load(file)
-        skip = content["skip"]
-        values_weighted = content["xpsnr"]
+        skip: int = content["skip"]
+        xpsnr_scores = content["xpsnr"]
 
-    return values_weighted, skip
+    return xpsnr_scores, skip
 
 def get_ssimu2(ssimu2_json_path) -> tuple[list[float], int]:
     ssimu2_scores: list[float] = []
@@ -317,7 +287,6 @@ def calculate_percentile(scores: list[float], percentile: int) -> float:
 
     fith_percent_index = percentile/100 * (scores_length + 1) - 1
     frac_part = fith_percent_index % 1.0
-
     lower_value = scores[int(fith_percent_index)]
 
     if frac_part == 0:
@@ -340,7 +309,6 @@ def calculate_std_dev(score_list: list[float]) -> tuple[float, float, float]:
 
     filtered_score_list = [score if score >= 0 else 0.0 for score in score_list]
     sorted_score_list = sorted(score_list)
-
     percentile_5 = calculate_percentile(sorted_score_list, 5)
     percentile_95 = calculate_percentile(sorted_score_list, 95)
     average = sum(filtered_score_list)/len(filtered_score_list)
@@ -432,9 +400,9 @@ def calculate_metrics(src_file: Path, output_file: Path, tmp_dir: Path,
         case 1:
             calculate_ssimu2(src_file, output_file, ssimu2_json_path, skip, hwaccel)
         case 2:
-            calculate_xpsnr(src_file, output_file, xpsnr_json_path)
+            calculate_xpsnr(src_file, output_file, xpsnr_json_path, skip)
         case 3 | 4:
-            calculate_xpsnr(src_file, output_file, xpsnr_json_path)
+            calculate_xpsnr(src_file, output_file, xpsnr_json_path, skip)
             calculate_ssimu2(src_file, output_file, ssimu2_json_path, skip, hwaccel)
 
 def calculate_zones(src_file: Path, tmp_dir: Path, ranges: list[int],
@@ -454,13 +422,22 @@ def calculate_zones(src_file: Path, tmp_dir: Path, ranges: list[int],
 
             metric_zones_txt_path = tmp_dir / f'{metric}_zones.txt'
 
+            # Expand the scores list with dummy values to the full length of the video to compensate the skip
+            metric_scores_expanded = []
+            for score in metric_scores:
+                metric_scores_expanded += [score] + [-1] * (skip - 1)
+            
             total_scores = []
             percentile_5_total = []
             for i in range(len(ranges) - 1):
-                chunk_scores = metric_scores[ranges[i]:ranges[i+1]]
-                _, chunk_percentile_5, _ = calculate_std_dev(chunk_scores)
-                percentile_5_total.append(chunk_percentile_5)
-                total_scores += chunk_scores
+                if metric_scores_expanded[ranges[i]:ranges[i+1]]:
+                    chunk_scores_expanded = metric_scores_expanded[ranges[i]:ranges[i+1]]
+                    # Remove the dummy values
+                    chunk_scores = [score for score in chunk_scores_expanded if score != -1]
+                    # print(chunk_scores, chunk_scores_expanded)
+                    _, chunk_percentile_5, _ = calculate_std_dev(chunk_scores)
+                    percentile_5_total.append(chunk_percentile_5)
+                    total_scores += chunk_scores
 
             metric_average, _, _ = calculate_std_dev(total_scores)
 
@@ -488,19 +465,25 @@ def calculate_zones(src_file: Path, tmp_dir: Path, ranges: list[int],
             if method_name == 'minimum':
                 ssimu2_average, _, _ = calculate_std_dev(ssimu2_scores)
 
+            ssimu2_scores_expanded = []
+            for score in ssimu2_scores:
+                ssimu2_scores_expanded += [score] + [-1] * (skip - 1)
+
+            xpsnr_scores_expanded = []
+            for score in xpsnr_scores:
+                xpsnr_scores_expanded += [score] + [-1] * (skip - 1)
+
             total_scores = []
             percentile_5_total = []
             for i in range(len(ranges) - 1):
-                chunk_ssimu2_scores: list[float] = ssimu2_scores[ranges[i]:ranges[i+1]]
-                chunk_xpsnr_scores: list[float] = xpsnr_scores[ranges[i]:ranges[i+1]]
-                # chunk_xpsnr_average: float = sum(chunk_xpsnr_scores) / len(chunk_xpsnr_scores)
+                chunk_ssimu2_scores_expanded: list[float] = ssimu2_scores_expanded[ranges[i]:ranges[i+1]]
+                chunk_xpsnr_scores_expanded: list[float] = xpsnr_scores_expanded[ranges[i]:ranges[i+1]]
+
+                chunk_ssimu2_scores = [score for score in chunk_ssimu2_scores_expanded if score != -1]
+                chunk_xpsnr_scores = [score for score in chunk_xpsnr_scores_expanded if score != -1]
                 chunk_scores = []
                 for i, ssimu2_score in enumerate(chunk_ssimu2_scores):
-                    if skip > 1 and i%skip == 0:
-                        scores = chunk_xpsnr_scores[i:skip]
-                        xpsnr_score = sum(scores) / len(scores)
-                    else:
-                        xpsnr_score = chunk_xpsnr_scores[i]
+                    xpsnr_score = chunk_xpsnr_scores[i]
 
                     if method_name == "multiplied":
                         chunk_scores.append(ssimu2_score * xpsnr_score)
