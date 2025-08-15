@@ -16,25 +16,26 @@ Dépendances :
 - [mkvmerge](https://www.matroska.org/index.html)
   
 Optionellement :
-- ffmpeg compilé avec support XPSNR
 - [turbo-metrics](https://github.com/Gui-Yom/turbo-metrics)
+- [vship](https://github.com/Line-fr/Vship)
 
 # Changements notables de l'original
 - Ajouté une barre de progression pour turbo-metrics
 - Ajouté une étape 4 pour un encodage final avec Av1an
+- Enlevé la dépendance à ffmpeg pour le calcul de XPSNR
+- Agressivité ajustable
 - (Techniquement plus précis avec une faible marge)
 
 # Todo, fonctionnalités
 - (En cours) Ajouter un framework d'encodage fait maison (Alternative à Av1an), parce que pourquoi pas
 - Pouvoir ajuster plus précisément l'agressivité
-- Enlever la dépendance à ffmpeg en utilisant l'implémentation xpsnr de vs-zip
 - Améliorer le CLI
 - (Peut-être) Ajouter un TUI
 - (Un jour) Ajouter un GUI
 
 # Todo, code
 - Rendre/Maintenir le code complètement conforme au [pep8](https://peps.python.org/pep-0008/)
-- Refactoriser le code pour avoir une architecture Controller-Model-View
+- Refactoriser le code pour avoir une architecture Model-View-Controller
 
 # Utilisation
 |Paramètre|Valeur par défaut|Valeurs possibles|Explication|
