@@ -24,6 +24,8 @@ Optionally:
 - Added a stage 4 for a final encode with Av1an
 - Removed the ffmpeg dependency for XPSNR calculation
 - Adjustable aggressiveness
+- Better metrics implementations options
+- Temporarly removed custom skip
 - (Technically more accurate by a small margin)
 
 # Todo, functionality
@@ -48,14 +50,13 @@ Optionally:
 |`--max-negative-dev`||`0`-`63`|Maximum negative deviation from base crf|
 |`-p, --preset`|`8`|`-1`-`13`|SVT-AV1 preset to use|
 |`-w, --workers`|CPU core count| `1`-`Any`|Number of Av1an workers|
-|`-S, --skip`|`1` (GPU), `3` (CPU)|`1`-`Any`|Calculate metrics every X frames|
 |`-m, --method`|`1`|`1`, `2`, `3`, `4`|Zones calculation method (1: SSIMU2, 2: XPSNR, 3: Multiplied, 4: Minimum)|
 |`-a, --aggressiveness`|`20` or `40`|`0` - `Any`|Choose boosting aggressiveness|
-|`-cpu, --force-cpu`|Not active||Force the use of CPU for SSIMU2 calculation|
-|`-gpu, --hwaccel`|`turbo-metrics`|`turbo-metrics`, `vship`|SSIMU2 hwaccel calculation framework|
+|`-M, --metrics-implementations`|`vszip,vszip`|`<vszip, vship, turbo-metrics>,<vszip>`|Choose each metric implementation. First is SSIMULACRA2, second is XPSNR|
 |`-v --video-params`|||Encoder parameters for Av1an|
 |`-ef, --encoder-framework`|`av1an`|`av1an`|Encoding framework to use|
 |`-o, --output`|Input file directory||Output file for final encode|
+<!-- |`-S, --skip`|`1` (GPU), `3` (CPU)|`1`-`Any`|Calculate metrics every X frames| -->
 
 ---
 _This project is based on the original work by **nekotrix**._  

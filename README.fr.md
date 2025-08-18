@@ -24,6 +24,8 @@ Optionellement :
 - Ajouté une étape 4 pour un encodage final avec Av1an
 - Enlevé la dépendance à ffmpeg pour le calcul de XPSNR
 - Agressivité ajustable
+- Meilleures options d'implémentations des métriques
+- Temporairement enlevé le skip personnalisé
 - (Techniquement plus précis avec une faible marge)
 
 # Todo, fonctionnalités
@@ -49,14 +51,13 @@ Optionellement :
 |`--max-negative-dev`||`0`-`63`|Écart maximum négatif du CRF de base|
 |`-p, --preset`|`8`|`-1`-`13`|Preset SVT-AV1 à utiliser|
 |`-w, --workers`|Nombre de coeurs CPU| `1`-`Any`|Nombre de workers Av1an|
-|`-S, --skip`|`1` (GPU), `3` (CPU)|`1`-`Any`|Calculer le score toutes les X images|
 |`-m, --method`|`1`|`1`, `2`, `3`, `4`|Méthode de calcul des zones(1: SSIMU2, 2: XPSNR, 3: Multiplié, 4: Minimum)|
 |`-a, --aggressiveness`|`20` ou `40`|`0` - `Any`|Choisir l'agréssivité du boost|
-|`-cpu, --force-cpu`|Pas actif||Forcer l'utilisation du CPU pour le calcul SSIMU2|
-|`-gpu, --hwaccel`|`turbo-metrics`|`turbo-metrics`, `vship`|Framework de calcul SSIMUM2 avec acceleration matérielle|
+|`-M, --metrics-implementations`|`vszip,vszip`|`<vszip, vship, turbo-metrics>,<vszip>`|Choisir l'implémentation de chaque métrique. Premier: SSIMULACRA2, deuxième: XPSNR|
 |`-v --video-params`|||Paramètres d'encodeur pour Av1an|
 |`-ef, --encoder-framework`|`av1an`|`av1an`|Framework d'encodage à utiliser|
 |`-o, --output`|Dossier de la vidéo original||Fichier de sortie pour l'encodage final|
+<!-- |`-S, --skip`|`1` (GPU), `3` (CPU)|`1`-`Any`|Calculer le score toutes les X images| -->
 
 ---
 

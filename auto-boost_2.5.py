@@ -12,19 +12,22 @@
 # Modified by MrPowley
 # License: MIT
 
-from math import ceil, floor
+from math import ceil
 from pathlib import Path
 import json
 # import os
 import subprocess
 # import re
 import argparse
-import shutil
+# import shutil
 # import platform
 
-from tqdm import tqdm
+# from tqdm import tqdm
 import psutil
 import vapoursynth as vs
+
+import ui
+import metrics
 
 # from encode import Encoder
 
@@ -113,150 +116,6 @@ def fast_pass(
     except subprocess.CalledProcessError as e:
         print(f"Av1an encountered an error:\n{e}")
         exit(1)
-
-def turbo_metrics(
-    source: Path,
-    distorted: Path,
-    every: int,
-    source_length: int
-    ) -> tuple[int, list[float]]:
-    """
-    Compare two files with SSIMULACRA2 using turbo-metrics.
-
-    Args:
-        source (Path): Input file path
-        distorted (Path): Distorted file path
-        every (int): compare every X frames
-
-    Returns:
-        subprocess returncode (int) and list of scores (list of floats)
-
-    """
-
-    turbo_cmd = [
-        "turbo-metrics",
-        "-m", "ssimulacra2",
-        "--output", "json-lines",
-        "--every", str(every),
-        str(source), str(distorted)
-    ]
-
-    scores: list[float] = []
-
-    turbo_process = subprocess.Popen(turbo_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-
-    with tqdm(total=floor(source_length / every), desc='Calculating SSIMULACRA 2 scores', unit=" frames", smoothing=0) as pbar:
-        for line in turbo_process.stdout:
-            content = json.loads(line)
-            if not "frame_count" in content:
-                score = content["ssimulacra2"]
-                scores.append(score)
-                pbar.update(every)
-
-    turbo_process.wait()
-    returncode = turbo_process.returncode
-    return returncode, scores
-
-def run_turbo_metrics(src_file: Path, enc_file: Path, ssimu2_json_path: Path,
-                      skip: int, source_clip_length):
-    returncode, turbo_metrics_scores = turbo_metrics(src_file, enc_file, skip, source_clip_length)
-
-    if returncode == 0 and turbo_metrics_scores:
-        with open(ssimu2_json_path, "w") as file:
-            json.dump({"skip": skip,"ssimulacra2": turbo_metrics_scores}, file)
-
-        return True # Exit if turbo-metrics succeeded
-    else:
-        print("Turbo Metrics failed\nFalling back to vship")
-        return False
-
-def calculate_ssimu2(src_file: Path, enc_file: Path, ssimu2_json_path: Path,
-                     skip: int, hwaccel: str|None):
-    is_vpy = src_file.suffix == ".vpy"
-    vpy_vars = {}
-    if is_vpy:
-        exec(open(src_file).read(), globals(), vpy_vars)
-
-    # in order for auto-boost to use a .vpy file as a source, the output clip should be a global variable named clip
-    source_clip = core.lsmas.LWLibavSource(source=src_file, cache=0) if not is_vpy else vpy_vars["clip"]
-    encoded_clip = core.lsmas.LWLibavSource(source=enc_file, cache=0)
-    source_clip_length = len(source_clip)
-
-    if hwaccel == "turbo-metrics":
-        turbo = run_turbo_metrics(src_file, enc_file, ssimu2_json_path, skip, source_clip_length)
-        if turbo:
-            return None
-        hwaccel = "vship"
-
-    if skip > 1:
-        cut_source_clip = source_clip.std.SelectEvery(cycle=skip, offsets=1)
-        cut_encoded_clip = encoded_clip.std.SelectEvery(cycle=skip, offsets=1)
-    else:
-        cut_source_clip = source_clip  # [ranges[i]:ranges[i+1]]
-        cut_encoded_clip = encoded_clip  # [ranges[i]:ranges[i+1]]
-
-    #source_clip = source_clip.resize.Bicubic(format=vs.RGBS, matrix_in_s='709').fmtc.transfer(transs="srgb", transd="linear", bits=32)
-    #encoded_clip = encoded_clip.resize.Bicubic(format=vs.RGBS, matrix_in_s='709').fmtc.transfer(transs="srgb", transd="linear", bits=32)
-
-    # print(f"source: {len(source_clip)} frames")
-    # print(f"encode: {len(encoded_clip)} frames")
-
-    scores = []
-
-    # smoothing : 0.0 -> 1.0 (Average -> Realtime) (Default: 0.3)
-    with tqdm(total=len(source_clip), desc=f'Calculating SSIMULACRA 2 scores', unit=" frames", smoothing=0) as pbar:
-        if hwaccel == "vship":
-            try:
-                result = core.vship.SSIMULACRA2(cut_source_clip, cut_encoded_clip)
-            except AttributeError:
-                print("vship failed\nFalling back to vs-zip")
-                result = core.vszip.SSIMULACRA2(cut_source_clip, cut_encoded_clip)
-        else:
-            result = core.vszip.SSIMULACRA2(cut_source_clip, cut_encoded_clip)
-
-        for frame in result.frames():
-            score = frame.props['SSIMULACRA2']
-            scores.append(score)
-            pbar.update(skip)
-
-    with open(ssimu2_json_path, "w") as file:
-        json.dump({"skip": skip,"ssimulacra2": scores}, file)
-    return None
-
-def calculate_xpsnr(src_file: Path, enc_file: Path, xpsnr_json_path: Path,
-                     skip: int):
-    is_vpy = src_file.suffix == ".vpy"
-    vpy_vars = {}
-    if is_vpy:
-        exec(open(src_file).read(), globals(), vpy_vars)
-
-    source_clip = core.lsmas.LWLibavSource(source=src_file, cache=0) if not is_vpy else vpy_vars["clip"]
-    encoded_clip = core.lsmas.LWLibavSource(source=enc_file, cache=0)
-
-    if skip > 1:
-        cut_source_clip = source_clip.std.SelectEvery(cycle=skip, offsets=1)
-        cut_encoded_clip = encoded_clip.std.SelectEvery(cycle=skip, offsets=1)
-    else:
-        cut_source_clip = source_clip
-        cut_encoded_clip = encoded_clip
-
-    scores = []
-
-    # smoothing : 0.0 -> 1.0 (Average -> Realtime) (Default: 0.3)
-    with tqdm(total=len(source_clip), desc=f'Calculating XPSNR scores', unit=" frames", smoothing=0) as pbar:
-        result = core.vszip.XPSNR(cut_source_clip, cut_encoded_clip)
-
-        for frame in result.frames():
-            y = frame.props['XPSNR_Y'] if frame.props['XPSNR_Y'] != float("inf") else 100.0
-            u = frame.props['XPSNR_U'] if frame.props['XPSNR_U'] != float("inf") else 100.0
-            v = frame.props['XPSNR_V'] if frame.props['XPSNR_V'] != float("inf") else 100.0
-            w = (4 * y + u + v) / 6
-            
-            scores.append(w)
-            pbar.update(skip)
-    with open(xpsnr_json_path, "w") as file:
-        json.dump({"skip": skip,"xpsnr": scores}, file)
-    return None
 
 def get_metric(json_path: Path, metric: str) -> tuple[list[float], int]:
     """Reads from a json file and returns the metric scores and skip values"""
@@ -382,19 +241,51 @@ def generate_zones(ranges: list[int], percentile_5_total: list[float], average: 
     print(f"Auto-Boost complete\nSee '{zones_txt_path}'")
     return None
 
+def calculate_xpsnr(source_file: Path, output_file: Path, json_path: Path, implementation: dict):
+    if implementation["implementation"].startswith("vs"):
+        vs_metrics = init_metric(source_file, output_file, json_path, implementation["skip"], metrics.VS_metrics, metric_name="xpsnr")
+        vs_metrics.xpsnr_vszip()
+    else:
+        raise NotImplementedError("(WIP) Use vszip for now")
+
+def calculate_ssimulacra2(source_file: Path, output_file: Path, json_path: Path, implementation: dict):
+    print(implementation)
+    if implementation["implementation"].startswith("vs"):
+        vs_metrics = init_metric(source_file, output_file, json_path, implementation["skip"], metrics.VS_metrics, metric_name="ssimulacra")
+
+        if implementation["implementation"] == "vszip":
+            vs_metrics.ssimulacra2_vszip()
+        elif implementation["implementation"] == "vship":
+            vs_metrics.ssimulcara2_vship()
+    elif implementation["implementation"] == "turbo-metrics":
+        turbo_metrics = init_metric(source_file, output_file, json_path, implementation["skip"], metrics.Turbo_metrics, metric_name="ssimulacra2")
+        turbo_metrics.run("ssimulacra2")
+    else:
+        raise NotImplementedError("(WIP) Use vszip or vship for now")
+
+def init_metric(source_file: Path, output_file: Path, json_path: Path, skip: int, metric_class, metric_name: str):
+    progressbar = ui.ProgressBar()
+    metric = metric_class(source_file, output_file, json_path, skip, progressbar.update_progressbar)
+
+    video_length = metric.get_length()
+
+    progressbar.initialize_progressbar(total=video_length, description=f"Calculating {metric_name}")
+
+    return metric
+
 def calculate_metrics(src_file: Path, output_file: Path, tmp_dir: Path,
-                      skip: int, method: int, hwaccel: str|None):
+                      method: int, implementation: dict):
     ssimu2_json_path = tmp_dir / f"{src_file.stem}_ssimulacra2.json"
     xpsnr_json_path = tmp_dir / f"{src_file.stem}_xpsnr.json"
 
     match method:
         case 1:
-            calculate_ssimu2(src_file, output_file, ssimu2_json_path, skip, hwaccel)
+            calculate_ssimulacra2(src_file, output_file, ssimu2_json_path, implementation["ssimulacra2"])
         case 2:
-            calculate_xpsnr(src_file, output_file, xpsnr_json_path, skip)
-        case 3 | 4:
-            calculate_xpsnr(src_file, output_file, xpsnr_json_path, skip)
-            calculate_ssimu2(src_file, output_file, ssimu2_json_path, skip, hwaccel)
+            calculate_xpsnr(src_file, output_file, xpsnr_json_path, implementation["xpsnr"])
+        case 3|4:
+            calculate_ssimulacra2(src_file, output_file, ssimu2_json_path, implementation["ssimulacra2"])
+            calculate_xpsnr(src_file, output_file, xpsnr_json_path, implementation["xpsnr"])
 
 def calculate_zones(src_file: Path, tmp_dir: Path, ranges: list[int],
                     method: int, cq: float, video_params: str,
@@ -406,7 +297,7 @@ def calculate_zones(src_file: Path, tmp_dir: Path, ranges: list[int],
                 metric = 'ssimulacra2'
             else:
                 metric = 'xpsnr'
-            
+
             metric_json_path = tmp_dir / f'{src_file.stem}_{metric}.json'
             metric_scores, skip = get_metric(metric_json_path, metric)
 
@@ -416,7 +307,7 @@ def calculate_zones(src_file: Path, tmp_dir: Path, ranges: list[int],
             metric_scores_expanded = []
             for score in metric_scores:
                 metric_scores_expanded += [score] + [-1] * (skip - 1)
-            
+
             total_scores = []
             percentile_5_total = []
             for i in range(len(ranges) - 1):
@@ -446,9 +337,9 @@ def calculate_zones(src_file: Path, tmp_dir: Path, ranges: list[int],
                 method_name = 'minimum'
 
             ssimu2_json_path = tmp_dir / f"{src_file.stem}_ssimulacra2.json"
-            ssimu2_scores, skip = get_metric(ssimu2_json_path, "ssimulacra2")
+            ssimu2_scores, skip = get_metric(ssimu2_json_path, "SSIMULACRA2")
             xpsnr_json_path = tmp_dir / f"{src_file.stem}_xpsnr.json"
-            xpsnr_scores, _ = get_metric(xpsnr_json_path, "xpsnr")
+            xpsnr_scores, _ = get_metric(xpsnr_json_path, "XPSNR")
 
             calculation_zones_txt_path = tmp_dir / f"{method_name}_zones.txt"
 
@@ -478,14 +369,14 @@ def calculate_zones(src_file: Path, tmp_dir: Path, ranges: list[int],
                     if method_name == "multiplied":
                         chunk_scores.append(ssimu2_score * xpsnr_score)
                     elif method_name == "minimum":
-                        chunk_scores.append(min(ssimu2_score, ssimu2_average * xpsnr_score))
+                        chunk_scores.append(min(ssimu2_score, ssimu2_average * xpsnr_score)) # type: ignore
 
                 total_scores += chunk_scores
                 _, chunk_percentile_5, _ = calculate_std_dev(chunk_scores)
                 percentile_5_total.append(chunk_percentile_5)
 
             calculation_average, _, _ = calculate_std_dev(total_scores)
-            
+
             # print(f'Minimum:')
             # print(f'Median score:  {calculation_average}')
             # print(f'5th Percentile:  {calculation_percentile_5}')
@@ -521,20 +412,16 @@ def parse_args() -> argparse.Namespace:
                         help="Fast encode preset (Default: 8)")
     parser.add_argument("-w", "--workers", type=int, default=psutil.cpu_count(logical=False),
                         help="Number of av1an workers (Default: Depends on physical cores number)")
-    parser.add_argument("-S", "--skip", type=int,
-                        help="SSIMU2 skip value, every nth frame's SSIMU2 is calculated"
-                        " (Default: 1 for turbo-metrics/vship, 3 for vs-zip)")
+    # parser.add_argument("-S", "--skip", type=int,
+    #                     help="Skip value, the metric is calculated every nth frames"
+    #                     " (Default: 1 for turbo-metrics/vship, 3 for vs-zip)")
     parser.add_argument("-m", "--method",type=int, default=1, choices=[1, 2, 3, 4],
                         help="Zones calculation method: 1 = SSIMU2, 2 = XPSNR,"
                         " 3 = Multiplication, 4 = Lowest Result (Default: 1)")
     parser.add_argument("-a", "--aggressiveness", type=float, default=20.0,
                         help="Choose aggressiveness, use 40 for more aggressive (Default: 20.0)")
-    parser.add_argument("-cpu", "--force-cpu", action='store_true',
-                        help="Force the use of vs-zip (CPU)" \
-                        " for SSIMULARA2 calculation (Default: not active)")
-    parser.add_argument("-gpu", "--hwaccel", default="turbo-metrics",
-                        help="Choose SSIMU2 hardware acceleration framework" \
-                        " from turbo-metrics and vship (Default: turbo-metrics)")
+    parser.add_argument("-M","--metrics-implementations", default="vszip,vszip",
+                        help="Metrics calculation implementation (Default: vszip,vszip)")
     parser.add_argument("-v","--video-params", default="",
                         help="Custom encoder parameters for av1an")
     parser.add_argument("-ef", "--encoder-framework", choices=["av1an", "builtin"], default="av1an",
@@ -547,21 +434,32 @@ def encode_av1an(src_file: Path, output_file: Path, zones_file: Path, video_para
     av1an_cmd = ["av1an", "-i", str(src_file), "-y", "--split-method", "none", "--verbose", "-e", "svt-av1", "-v", video_params.strip(), "--zones", str(zones_file), "-o", str(output_file), "-w", str(workers)]
     subprocess.run(av1an_cmd)
 
-def resolve_hwaccel(force_cpu: bool, hwaccel: str, vs_core) -> tuple[None|str, int]:
-    if force_cpu:
-        return None, 3
+def resolve_implementation(string: str) -> dict:
+    implementations = string.split(",")
+    if len(implementations) < 2:
+        implementations += [""]
 
-    if hwaccel == "turbo-metrics":
-        if shutil.which("turbo-metrics"):
-            return "turbo-metrics", 1
-        hwaccel = "vship"
+    implementations_dict = {
+        "ssimulacra2": {"implementation": implementations[0], "skip": 1},
+        "xpsnr": {"implementation": implementations[1], "skip": 1}
+    }
 
-    if hwaccel == "vship":
-        if hasattr(vs_core, "vship"):
-            return "vship", 1
-        return None, 3
+    if (
+        not implementations_dict["ssimulacra2"]["implementation"]
+         or implementations_dict["ssimulacra2"]["implementation"] not in ("vszip", "vship", "turbo-metrics")
+        ):
+        implementations_dict["ssimulacra2"]["implementation"] = "vszip"
+        
+    if (
+        not implementations_dict["xpsnr"]["implementation"]
+         or implementations_dict["xpsnr"]["implementation"] not in ("vszip")
+        ):
+        implementations_dict["xpsnr"]["implementation"] = "vszip"
 
-    return None, 3  # fallback
+    if implementations_dict["ssimulacra2"]["implementation"] == "vszip":
+        implementations_dict["ssimulacra2"]["skip"] = 3
+
+    return implementations_dict
 
 def main():
     """Main function, managing stages"""
@@ -586,9 +484,7 @@ def main():
     max_neg_dev: float|None = args.max_negative_dev
     aggressiveness: float = args.aggressiveness
 
-    force_cpu: bool = args.force_cpu
-    hwaccel, default_skip = resolve_hwaccel(force_cpu, args.hwaccel, core)
-    skip: int = args.skip if args.skip is not None else default_skip
+    metric_implementation = resolve_implementation(args.metric_implementation)
 
     # Encoding Parameters
     crf: float = args.crf
@@ -597,7 +493,7 @@ def main():
 
     encoder_framework: str = args.encoder_framework
 
-    metric = "ssimu2"
+    metric = "ssimulacra2"
     match method:
         case 2:
             metric = "xpsnr"
@@ -619,14 +515,14 @@ def main():
         case 0:
             fast_pass(src_file, fastpass_file, tmp_dir, scenes_file, preset, crf, workers, video_params)
             ranges = get_ranges(scenes_file)
-            calculate_metrics(src_file, fastpass_file, tmp_dir, skip, method, hwaccel)
+            calculate_metrics(src_file, fastpass_file, tmp_dir, method, metric_implementation)
             calculate_zones(src_file, tmp_dir, ranges, method, crf, video_params, max_pos_dev, max_neg_dev, base_deviation, aggressiveness, workers)
             encode_av1an(src_file, output_file, zones_path, f"--preset {preset} --lp 2 {" ".join(video_params.split())}",
                          workers)
         case 1:
             fast_pass(src_file, fastpass_file, tmp_dir, scenes_file, preset, crf, workers, video_params)
         case 2:
-            calculate_metrics(src_file, fastpass_file, tmp_dir, skip, method, hwaccel)
+            calculate_metrics(src_file, fastpass_file, tmp_dir, method, metric_implementation)
         case 3:
             ranges = get_ranges(scenes_file)
             calculate_zones(src_file, tmp_dir, ranges, method, crf, video_params, max_pos_dev, max_neg_dev, base_deviation, aggressiveness, workers)
