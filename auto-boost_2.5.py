@@ -49,7 +49,7 @@ def get_ranges(scenes: Path) -> list[int]:
     """
     ranges = [0]
 
-    with open(scenes, "r") as file:
+    with open(scenes, 'r', encoding='utf-8') as file:
         content = json.load(file)
         for scene in content['scenes']:
             ranges.append(scene['end_frame'])
@@ -121,7 +121,7 @@ def get_metric(json_path: Path, metric: str) -> tuple[list[float], int]:
     """Reads from a json file and returns the metric scores and skip values"""
     scores: list[float] = []
 
-    with open(json_path, "r") as file:
+    with open(json_path, "r", encoding="utf-8") as file:
         content = json.load(file)
         skip: int = content["skip"]
         scores = content[metric]
@@ -168,7 +168,7 @@ def calculate_std_dev(score_list: list[float]) -> tuple[float, float, float]:
 def generate_zones(ranges: list[int], percentile_5_total: list[float], average: float,
                    crf: float, zones_txt_path: Path, video_params: str,
                    max_pos_dev: float | None, max_neg_dev: float | None,
-                   base_deviation: float, aggressiveness: float, workers: int):
+                   base_deviation: float, aggressiveness: float, workers: int) -> None:
     """
     Appends a scene change to the ``zones_txt_path`` file in Av1an zones format.
 
@@ -205,9 +205,13 @@ def generate_zones(ranges: list[int], percentile_5_total: list[float], average: 
         new_crf = crf - adjustment
 
         # Calculation explanation
-        # percentile5/avg give a quality % of the frame compared to average. 1 = average (Good); <1 = lower than average (bad, needs up boost); >1 = higher than average (~bad, can be reduced)
-        # 1 - percentile5/avg inverts the previous ratio so the closer to zero, the better the frame, the further to zero the worst the frame
-        # * multiplier highlights the extremes so they get more boosted, the higher the multiplier, the more the frame is boosted
+        # percentile5/avg give a quality % of the frame compared to average.
+        # 1 = average (Good); <1 = lower than average (bad, needs up boost);
+        # >1 = higher than average (~bad, can be reduced)
+        # 1 - percentile5/avg inverts the previous ratio so the closer to zero,
+        # the better the frame, the further to zero the worst the frame
+        # * multiplier highlights the extremes so they get more boosted,
+        # the higher the multiplier, the more the frame is boosted
         # ceil(... * 4 ) / 4 round the adjustment to 0.25
 
         # Apply deviation limits
@@ -235,35 +239,47 @@ def generate_zones(ranges: list[int], percentile_5_total: list[float], average: 
         if video_params:  # Only append video_params if it exists and is not None
             zone_params += f' {video_params}'
 
-        with open(zones_txt_path, "w" if zones_iter == 1 else "a") as file:
+        with open(zones_txt_path, "w" if zones_iter == 1 else "a", encoding="utf-8") as file:
             file.write(f"{ranges[i]} {ranges[i+1]} svt-av1 {zone_params}\n")
 
     print(f"Auto-Boost complete\nSee '{zones_txt_path}'")
     return None
 
-def calculate_xpsnr(source_file: Path, output_file: Path, json_path: Path, implementation: dict):
+def calculate_xpsnr(
+        source_file: Path, output_file: Path, json_path: Path, implementation: dict) -> None:
+    """Handles implementation and calls the appropriated XPSNR calculation method"""
     if implementation["implementation"].startswith("vs"):
-        vs_metrics = init_metric(source_file, output_file, json_path, implementation["skip"], metrics.VS_metrics, metric_name="xpsnr")
+        vs_metrics = init_metric(
+            source_file, output_file, json_path, implementation["skip"],
+            metrics.VSMetrics, metric_name="xpsnr")
         vs_metrics.xpsnr_vszip()
     else:
         raise NotImplementedError("(WIP) Use vszip for now")
 
-def calculate_ssimulacra2(source_file: Path, output_file: Path, json_path: Path, implementation: dict):
-    print(implementation)
+def calculate_ssimulacra2(
+        source_file: Path, output_file: Path, json_path: Path, implementation: dict) -> None:
+    """Handles implementation and calls the appropriated SSIMULACRA2 calculation method"""
     if implementation["implementation"].startswith("vs"):
-        vs_metrics = init_metric(source_file, output_file, json_path, implementation["skip"], metrics.VS_metrics, metric_name="ssimulacra")
+        vs_metrics = init_metric(
+            source_file, output_file, json_path, implementation["skip"],
+            metrics.VSMetrics, metric_name="ssimulacra")
 
         if implementation["implementation"] == "vszip":
             vs_metrics.ssimulacra2_vszip()
         elif implementation["implementation"] == "vship":
             vs_metrics.ssimulcara2_vship()
     elif implementation["implementation"] == "turbo-metrics":
-        turbo_metrics = init_metric(source_file, output_file, json_path, implementation["skip"], metrics.Turbo_metrics, metric_name="ssimulacra2")
+        turbo_metrics = init_metric(
+            source_file, output_file, json_path, implementation["skip"],
+            metrics.TurboMetrics, metric_name="ssimulacra2")
         turbo_metrics.run("ssimulacra2")
     else:
         raise NotImplementedError("(WIP) Use vszip or vship for now")
 
-def init_metric(source_file: Path, output_file: Path, json_path: Path, skip: int, metric_class, metric_name: str):
+def init_metric(
+        source_file: Path, output_file: Path, json_path: Path,
+        skip: int, metric_class, metric_name: str):
+    """Initializes the metric and its progressbar"""
     progressbar = ui.ProgressBar()
     metric = metric_class(source_file, output_file, json_path, skip, progressbar.update_progressbar)
 
@@ -274,27 +290,33 @@ def init_metric(source_file: Path, output_file: Path, json_path: Path, skip: int
     return metric
 
 def calculate_metrics(src_file: Path, output_file: Path, tmp_dir: Path,
-                      method: int, implementation: dict):
+                      method: int, implementation: dict) -> None:
+    """Handles method arg to calculate appropriate metric"""
     ssimu2_json_path = tmp_dir / f"{src_file.stem}_ssimulacra2.json"
     xpsnr_json_path = tmp_dir / f"{src_file.stem}_xpsnr.json"
 
     match method:
         case 1:
-            calculate_ssimulacra2(src_file, output_file, ssimu2_json_path, implementation["ssimulacra2"])
+            calculate_ssimulacra2(
+                src_file, output_file, ssimu2_json_path, implementation["ssimulacra2"])
         case 2:
             calculate_xpsnr(src_file, output_file, xpsnr_json_path, implementation["xpsnr"])
         case 3|4:
-            calculate_ssimulacra2(src_file, output_file, ssimu2_json_path, implementation["ssimulacra2"])
+            calculate_ssimulacra2(
+                src_file, output_file, ssimu2_json_path, implementation["ssimulacra2"])
             calculate_xpsnr(src_file, output_file, xpsnr_json_path, implementation["xpsnr"])
 
-def calculate_zones(src_file: Path, tmp_dir: Path, ranges: list[int],
-                    method: int, cq: float, video_params: str,
-                    max_pos_dev: float|None, max_neg_dev: float|None,
-                    base_deviation: float, aggressiveness: float, workers: int):
+def calculate_zones(
+        src_file: Path, tmp_dir: Path, ranges: list[int],
+        method: int, cq: float, video_params: str,
+        max_pos_dev: float|None, max_neg_dev: float|None,
+        base_deviation: float, aggressiveness: float, workers: int
+        ) -> None:
+    """Calcules zones with chosen method and metric"""
     match method:
         case 1 | 2:
             if method == 1:
-                metric = 'ssimulacra2'
+                metric = 'SSIMULACRA2'
             else:
                 metric = 'xpsnr'
 
@@ -303,7 +325,8 @@ def calculate_zones(src_file: Path, tmp_dir: Path, ranges: list[int],
 
             metric_zones_txt_path = tmp_dir / f'{metric}_zones.txt'
 
-            # Expand the scores list with dummy values to the full length of the video to compensate the skip
+            # Expand the scores list with dummy values
+            #  to the full length of the video to compensate the skip
             metric_scores_expanded = []
             for score in metric_scores:
                 metric_scores_expanded += [score] + [-1] * (skip - 1)
@@ -357,10 +380,12 @@ def calculate_zones(src_file: Path, tmp_dir: Path, ranges: list[int],
             total_scores = []
             percentile_5_total = []
             for i in range(len(ranges) - 1):
-                chunk_ssimu2_scores_expanded: list[float] = ssimu2_scores_expanded[ranges[i]:ranges[i+1]]
-                chunk_xpsnr_scores_expanded: list[float] = xpsnr_scores_expanded[ranges[i]:ranges[i+1]]
+                chunk_ssimu2_scores_expanded = ssimu2_scores_expanded[ranges[i]:ranges[i+1]]
+                chunk_xpsnr_scores_expanded = xpsnr_scores_expanded[ranges[i]:ranges[i+1]]
 
-                chunk_ssimu2_scores = [score for score in chunk_ssimu2_scores_expanded if score != -1]
+                chunk_ssimu2_scores = [
+                    score for score in chunk_ssimu2_scores_expanded if score != -1
+                    ]
                 chunk_xpsnr_scores = [score for score in chunk_xpsnr_scores_expanded if score != -1]
                 chunk_scores = []
                 for i, ssimu2_score in enumerate(chunk_ssimu2_scores):
@@ -369,7 +394,9 @@ def calculate_zones(src_file: Path, tmp_dir: Path, ranges: list[int],
                     if method_name == "multiplied":
                         chunk_scores.append(ssimu2_score * xpsnr_score)
                     elif method_name == "minimum":
-                        chunk_scores.append(min(ssimu2_score, ssimu2_average * xpsnr_score)) # type: ignore
+                        chunk_scores.append(
+                            min(ssimu2_score, ssimu2_average * xpsnr_score) # type: ignore
+                            )
 
                 total_scores += chunk_scores
                 _, chunk_percentile_5, _ = calculate_std_dev(chunk_scores)
@@ -424,17 +451,35 @@ def parse_args() -> argparse.Namespace:
                         help="Metrics calculation implementation (Default: vszip,vszip)")
     parser.add_argument("-v","--video-params", default="",
                         help="Custom encoder parameters for av1an")
-    parser.add_argument("-ef", "--encoder-framework", choices=["av1an", "builtin"], default="av1an",
-                        help="Choose encoder framework from av1an or builtin (Not implemented yet) (Default: av1an)")
+    parser.add_argument("-ef", "--encoder-framework", choices=["av1an", "builtin"],
+                        default="av1an",
+                        help="Choose encoder framework from av1an or builtin"
+                        " (Not implemented yet) (Default: av1an)")
     parser.add_argument("-o", "--output",
                         help="Output file path for final encode (Default: input directory)")
     return parser.parse_args()
 
-def encode_av1an(src_file: Path, output_file: Path, zones_file: Path, video_params: str, workers: int):
-    av1an_cmd = ["av1an", "-i", str(src_file), "-y", "--split-method", "none", "--verbose", "-e", "svt-av1", "-v", video_params.strip(), "--zones", str(zones_file), "-o", str(output_file), "-w", str(workers)]
-    subprocess.run(av1an_cmd)
+def encode_av1an(
+        src_file: Path, output_file: Path, zones_file: Path, video_params: str, workers: int
+        ) -> None:
+    """Encode input video with av1an zones"""
+    av1an_cmd = [
+        "av1an",
+        "-i", str(src_file),
+        "-y",
+        "--split-method", "none",
+        "--verbose",
+        "-e", "svt-av1",
+        "-v", video_params.strip(),
+        "--zones", str(zones_file),
+        "-o", str(output_file),
+        "-w", str(workers)
+        ]
+
+    subprocess.run(av1an_cmd, check=True)
 
 def resolve_implementation(string: str) -> dict:
+    """Handles the metric-implementation arg"""
     implementations = string.split(",")
     if len(implementations) < 2:
         implementations += [""]
@@ -446,10 +491,11 @@ def resolve_implementation(string: str) -> dict:
 
     if (
         not implementations_dict["ssimulacra2"]["implementation"]
-         or implementations_dict["ssimulacra2"]["implementation"] not in ("vszip", "vship", "turbo-metrics")
+         or implementations_dict["ssimulacra2"]["implementation"]
+        not in ("vszip", "vship", "turbo-metrics")
         ):
         implementations_dict["ssimulacra2"]["implementation"] = "vszip"
-        
+
     if (
         not implementations_dict["xpsnr"]["implementation"]
          or implementations_dict["xpsnr"]["implementation"] not in ("vszip")
@@ -465,16 +511,23 @@ def main():
     """Main function, managing stages"""
     args = parse_args()
 
-    # if shutil.which("av1an") is None:
-    #     raise FileNotFoundError("'av1an' is required but was not found in your system PATH. Install it and try again.")
-
     # Directories / Files
     src_file: Path = Path(args.input).resolve()
     output_dir: Path = src_file.parent
-    tmp_dir: Path = Path(args.temp).resolve() if args.temp is not None else output_dir / src_file.stem
+
+    if args.temp is not None:
+        tmp_dir: Path = Path(args.temp).resolve()
+    else:
+        tmp_dir: Path = output_dir / src_file.stem
+
+
     fastpass_file: Path = tmp_dir / "fastpass.mkv"
     scenes_file: Path = tmp_dir / "scenes.json"
-    output_file: Path = args.output if args.output is not None else output_dir / f"{src_file.stem}_boosted.mkv"
+
+    if args.output is not None:
+        output_file: Path = args.output
+    else:
+        output_file: Path = output_dir / f"{src_file.stem}_boosted.mkv"
 
     # Computation Parameters
     stage: int = args.stage
@@ -491,7 +544,7 @@ def main():
     preset: int = args.preset
     video_params: str = args.video_params
 
-    encoder_framework: str = args.encoder_framework
+    # encoder_framework: str = args.encoder_framework
 
     metric = "ssimulacra2"
     match method:
@@ -505,6 +558,13 @@ def main():
     zones_path = tmp_dir / f'{metric}_zones.txt'
     workers: int = args.workers
 
+    if tmp_dir.exists() and stage == 1:
+        user_cancel = input(
+            "Temporary directory already exists and will be erased, continue ? [Y/n]"
+            )
+        if user_cancel.lower() not in ("y", ""):
+            exit(1)
+
     if not src_file.is_file():
         raise FileNotFoundError(f"File: '{str(src_file)}' doesn't exist.")
 
@@ -513,19 +573,28 @@ def main():
 
     match stage:
         case 0:
-            fast_pass(src_file, fastpass_file, tmp_dir, scenes_file, preset, crf, workers, video_params)
+            fast_pass(src_file, fastpass_file, tmp_dir, scenes_file,
+                      preset,crf, workers, video_params)
+
             ranges = get_ranges(scenes_file)
+
             calculate_metrics(src_file, fastpass_file, tmp_dir, method, metric_implementation)
-            calculate_zones(src_file, tmp_dir, ranges, method, crf, video_params, max_pos_dev, max_neg_dev, base_deviation, aggressiveness, workers)
-            encode_av1an(src_file, output_file, zones_path, f"--preset {preset} --lp 2 {" ".join(video_params.split())}",
+            calculate_zones(src_file, tmp_dir, ranges, method, crf,
+                            video_params, max_pos_dev, max_neg_dev,
+                            base_deviation, aggressiveness, workers)
+            encode_av1an(src_file, output_file, zones_path,
+                         f"--preset {preset} --lp 2 {" ".join(video_params.split())}",
                          workers)
         case 1:
-            fast_pass(src_file, fastpass_file, tmp_dir, scenes_file, preset, crf, workers, video_params)
+            fast_pass(src_file, fastpass_file, tmp_dir, scenes_file,
+                      preset, crf, workers, video_params)
         case 2:
             calculate_metrics(src_file, fastpass_file, tmp_dir, method, metric_implementation)
         case 3:
             ranges = get_ranges(scenes_file)
-            calculate_zones(src_file, tmp_dir, ranges, method, crf, video_params, max_pos_dev, max_neg_dev, base_deviation, aggressiveness, workers)
+            calculate_zones(src_file, tmp_dir, ranges, method, crf,
+                            video_params, max_pos_dev, max_neg_dev,
+                            base_deviation, aggressiveness, workers)
         case 4:
             encode_av1an(src_file, output_file, zones_path,
                              f"--preset {preset} --lp 2 {" ".join(video_params.split())}", workers)

@@ -12,4 +12,3 @@ class ProgressBar:
     def update_progressbar(self, increment):
         """Updates the progressbar by specific increment"""
         self.pbar.update(increment)
-        
