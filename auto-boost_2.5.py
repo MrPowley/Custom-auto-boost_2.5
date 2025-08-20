@@ -484,7 +484,7 @@ def main():
     max_neg_dev: float|None = args.max_negative_dev
     aggressiveness: float = args.aggressiveness
 
-    metric_implementation = resolve_implementation(args.metric_implementation)
+    metric_implementation = resolve_implementation(args.metrics_implementations)
 
     # Encoding Parameters
     crf: float = args.crf
