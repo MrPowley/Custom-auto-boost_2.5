@@ -15,27 +15,14 @@
 from math import ceil
 from pathlib import Path
 import json
-# import os
 import subprocess
-# import re
 import argparse
-# import shutil
-# import platform
 
-# from tqdm import tqdm
 import psutil
-import vapoursynth as vs
 
 import ui
 import metrics
-
-# from encode import Encoder
-
-# IS_WINDOWS = platform.system() == 'Windows'
-# NULL_DEVICE = 'NUL' if IS_WINDOWS else '/dev/null'
-
-core = vs.core
-core.max_cache_size = 1024
+import encoders
 
 def get_ranges(scenes: Path) -> list[int]:
     """
@@ -55,67 +42,6 @@ def get_ranges(scenes: Path) -> list[int]:
             ranges.append(scene['end_frame'])
 
     return ranges
-
-
-def fast_pass(
-        input_file: Path,
-        output_file: Path,
-        tmp_dir: Path,
-        scenes_file: Path,
-        preset: int,
-        crf: float,
-        workers: int,
-        video_params: str
-    ) -> None:
-    """
-    Fast av1an encoding
-
-    Args:
-        input_file (Path): Input video file path
-        output_file (Path): Output video file path
-        tmp_dir (Path): Temporary directory path
-        scenes_file (Path): scenes.json file path
-        preset (int): Encoder preset
-        crf (float): Encoder CRF
-        workers (int): Number of av1an workers
-        video_params (str): Encoder video parameters
-
-    Returns:
-        None
-    """
-
-    encoder_params = f'--preset {preset} --crf {crf:.2f} --lp 2 --keyint 0 --scm 0' \
-                      ' --fast-decode 1 --color-primaries 1' \
-                      ' --transfer-characteristics 1 --matrix-coefficients 1'
-
-    if video_params:  # Only append video_params if it exists and is not None
-        encoder_params += f' {video_params}'
-
-    fast_av1an_command = [
-        'av1an',
-        '-i', str(input_file),
-        '--temp', str(tmp_dir),
-        '-y',
-        '--verbose',
-        '--keep',
-        '-m', 'lsmash',
-        '-c', 'mkvmerge',
-        '--min-scene-len', '24',
-        '--scenes', str(scenes_file),
-        '--sc-downscale-height', '720',
-        '--set-thread-affinity', '2',
-        '-e', 'svt-av1',
-        '--force',
-        '-v', encoder_params,
-        '-w', str(workers),
-        '-o', str(output_file)
-    ]
-
-    try:
-        subprocess.run(fast_av1an_command, text=True, check=True)
-    except subprocess.CalledProcessError as e:
-        print(f"Av1an encountered an error:\n{e}")
-        exit(1)
 
 def get_metric(json_path: Path, metric: str) -> tuple[list[float], int]:
     """Reads from a json file and returns the metric scores and skip values"""
@@ -248,33 +174,42 @@ def generate_zones(ranges: list[int], percentile_5_total: list[float], average: 
 def calculate_xpsnr(
         source_file: Path, output_file: Path, json_path: Path, implementation: dict) -> None:
     """Handles implementation and calls the appropriated XPSNR calculation method"""
-    if implementation["implementation"].startswith("vs"):
-        vs_metrics = init_metric(
-            source_file, output_file, json_path, implementation["skip"],
-            metrics.VSMetrics, metric_name="xpsnr")
-        vs_metrics.xpsnr_vszip()
-    else:
-        raise NotImplementedError("(WIP) Use vszip for now")
+    implementation_handlers = {
+        "vszip": [metrics.VSzipXPSNR]
+    }
+
+    for handler in implementation_handlers.get(implementation["implementation"]):
+        metric = init_metric(
+            source_file, output_file, json_path, implementation["skip"], handler, "XPSNR")
+        returncode = metric.run()
+        if returncode == 0:
+            return None
+    raise RuntimeError("All XPSNR metric implementations failed")
 
 def calculate_ssimulacra2(
         source_file: Path, output_file: Path, json_path: Path, implementation: dict) -> None:
     """Handles implementation and calls the appropriated SSIMULACRA2 calculation method"""
-    if implementation["implementation"].startswith("vs"):
-        vs_metrics = init_metric(
-            source_file, output_file, json_path, implementation["skip"],
-            metrics.VSMetrics, metric_name="ssimulacra")
 
-        if implementation["implementation"] == "vszip":
-            vs_metrics.ssimulacra2_vszip()
-        elif implementation["implementation"] == "vship":
-            vs_metrics.ssimulcara2_vship()
-    elif implementation["implementation"] == "turbo-metrics":
-        turbo_metrics = init_metric(
-            source_file, output_file, json_path, implementation["skip"],
-            metrics.TurboMetrics, metric_name="ssimulacra2")
-        turbo_metrics.run("ssimulacra2")
-    else:
-        raise NotImplementedError("(WIP) Use vszip or vship for now")
+    implementation_handlers = {
+        "turbo-metrics": [
+            metrics.TurboMetricsSSIMULACRA2,
+            metrics.VShipSSIMULACRA2,
+            metrics.VSzipSSIMULACRA2],
+        "vship": [
+            metrics.VShipSSIMULACRA2,
+            metrics.TurboMetricsSSIMULACRA2,
+            metrics.VSzipSSIMULACRA2],
+        "vszip": [
+            metrics.VSzipSSIMULACRA2]
+    }
+
+    for handler in implementation_handlers.get(implementation["implementation"]):
+        metric = init_metric(
+            source_file, output_file, json_path, implementation["skip"], handler, "SSIMULACRA2")
+        returncode = metric.run()
+        if returncode == 0:
+            return None
+    raise RuntimeError("All SSIMULACRA2 metric implementations failed")
 
 def init_metric(
         source_file: Path, output_file: Path, json_path: Path,
@@ -435,8 +370,8 @@ def parse_args() -> argparse.Namespace:
                         help="Maximum allowed positive CRF deviation (Default: None)")
     parser.add_argument("--max-negative-dev", type=float, default=None,
                         help="Maximum allowed negative CRF deviation | Default: None")
-    parser.add_argument("-p", "--preset", type=int, default=8,
-                        help="Fast encode preset (Default: 8)")
+    parser.add_argument("-p", "--preset", type=int, default=6,
+                        help="Fast encode preset (Default: 6)")
     parser.add_argument("-w", "--workers", type=int, default=psutil.cpu_count(logical=False),
                         help="Number of av1an workers (Default: Depends on physical cores number)")
     # parser.add_argument("-S", "--skip", type=int,
@@ -447,8 +382,8 @@ def parse_args() -> argparse.Namespace:
                         " 3 = Multiplication, 4 = Lowest Result (Default: 1)")
     parser.add_argument("-a", "--aggressiveness", type=float, default=20.0,
                         help="Choose aggressiveness, use 40 for more aggressive (Default: 20.0)")
-    parser.add_argument("-M","--metrics-implementations", default="vszip,vszip",
-                        help="Metrics calculation implementation (Default: vszip,vszip)")
+    parser.add_argument("-M","--metrics-implementations", default="vship,vszip", type=str,
+                        help="Metrics calculation implementation (Default: vship,vszip)")
     parser.add_argument("-v","--video-params", default="",
                         help="Custom encoder parameters for av1an")
     parser.add_argument("-ef", "--encoder-framework", choices=["av1an", "builtin"],
@@ -458,25 +393,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("-o", "--output",
                         help="Output file path for final encode (Default: input directory)")
     return parser.parse_args()
-
-def encode_av1an(
-        src_file: Path, output_file: Path, zones_file: Path, video_params: str, workers: int
-        ) -> None:
-    """Encode input video with av1an zones"""
-    av1an_cmd = [
-        "av1an",
-        "-i", str(src_file),
-        "-y",
-        "--split-method", "none",
-        "--verbose",
-        "-e", "svt-av1",
-        "-v", video_params.strip(),
-        "--zones", str(zones_file),
-        "-o", str(output_file),
-        "-w", str(workers)
-        ]
-
-    subprocess.run(av1an_cmd, check=True)
 
 def resolve_implementation(string: str) -> dict:
     """Handles the metric-implementation arg"""
@@ -489,19 +405,22 @@ def resolve_implementation(string: str) -> dict:
         "xpsnr": {"implementation": implementations[1], "skip": 1}
     }
 
+    # Handle SSIMULACRA2
     if (
         not implementations_dict["ssimulacra2"]["implementation"]
          or implementations_dict["ssimulacra2"]["implementation"]
         not in ("vszip", "vship", "turbo-metrics")
         ):
-        implementations_dict["ssimulacra2"]["implementation"] = "vszip"
+        implementations_dict["ssimulacra2"]["implementation"] = "vship"
 
+    # Handle xpsnr
     if (
         not implementations_dict["xpsnr"]["implementation"]
          or implementations_dict["xpsnr"]["implementation"] not in ("vszip")
         ):
         implementations_dict["xpsnr"]["implementation"] = "vszip"
 
+    # Add skip for ssimulacra2 vszip
     if implementations_dict["ssimulacra2"]["implementation"] == "vszip":
         implementations_dict["ssimulacra2"]["skip"] = 3
 
@@ -520,9 +439,11 @@ def main():
     else:
         tmp_dir: Path = output_dir / src_file.stem
 
+    fastpass_temp_dir = tmp_dir / "fastpass"
+    finalpass_temp_dir = tmp_dir / "finalpass"
 
-    fastpass_file: Path = tmp_dir / "fastpass.mkv"
-    scenes_file: Path = tmp_dir / "scenes.json"
+    fastpass_path: Path = tmp_dir / "fastpass.mkv"
+    scenes_path: Path = tmp_dir / "scenes.json"
 
     if args.output is not None:
         output_file: Path = args.output
@@ -573,31 +494,30 @@ def main():
 
     match stage:
         case 0:
-            fast_pass(src_file, fastpass_file, tmp_dir, scenes_file,
-                      preset,crf, workers, video_params)
+            av1an = encoders.Av1an(src_file, workers, video_params)
+            av1an.fast_pass(fastpass_path, fastpass_temp_dir, scenes_path, preset=8, crf=crf)
 
-            ranges = get_ranges(scenes_file)
+            ranges = get_ranges(scenes_path)
 
-            calculate_metrics(src_file, fastpass_file, tmp_dir, method, metric_implementation)
+            calculate_metrics(src_file, fastpass_path, tmp_dir, method, metric_implementation)
             calculate_zones(src_file, tmp_dir, ranges, method, crf,
                             video_params, max_pos_dev, max_neg_dev,
                             base_deviation, aggressiveness, workers)
-            encode_av1an(src_file, output_file, zones_path,
-                         f"--preset {preset} --lp 2 {" ".join(video_params.split())}",
-                         workers)
+
+            av1an.final_pass(output_file, finalpass_temp_dir, zones_path, preset=2)
         case 1:
-            fast_pass(src_file, fastpass_file, tmp_dir, scenes_file,
-                      preset, crf, workers, video_params)
+            av1an = encoders.Av1an(src_file, workers, video_params)
+            av1an.fast_pass(fastpass_path, fastpass_temp_dir, scenes_path, preset, crf)
         case 2:
-            calculate_metrics(src_file, fastpass_file, tmp_dir, method, metric_implementation)
+            calculate_metrics(src_file, fastpass_path, tmp_dir, method, metric_implementation)
         case 3:
-            ranges = get_ranges(scenes_file)
+            ranges = get_ranges(scenes_path)
             calculate_zones(src_file, tmp_dir, ranges, method, crf,
                             video_params, max_pos_dev, max_neg_dev,
                             base_deviation, aggressiveness, workers)
         case 4:
-            encode_av1an(src_file, output_file, zones_path,
-                             f"--preset {preset} --lp 2 {" ".join(video_params.split())}", workers)
+            av1an = encoders.Av1an(src_file, workers, video_params)
+            av1an.final_pass(output_file, finalpass_temp_dir, zones_path, preset)
     return None
 
 
