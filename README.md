@@ -48,11 +48,11 @@ Optionally:
 |`-d, -deviation`|`10`|`0`-`63`|Maximum crf deviation from base crf|
 |`--max-positive-dev`||`0`-`63`|Maximum positive deviation from base crf|
 |`--max-negative-dev`||`0`-`63`|Maximum negative deviation from base crf|
-|`-p, --preset`|`8`|`-1`-`13`|SVT-AV1 preset to use|
+|`-p, --preset`|`6`|`-1`-`13`|SVT-AV1 preset to use|
 |`-w, --workers`|CPU core count| `1`-`Any`|Number of Av1an workers|
 |`-m, --method`|`1`|`1`, `2`, `3`, `4`|Zones calculation method (1: SSIMU2, 2: XPSNR, 3: Multiplied, 4: Minimum)|
 |`-a, --aggressiveness`|`20` or `40`|`0` - `Any`|Choose boosting aggressiveness|
-|`-M, --metrics-implementations`|`vszip,vszip`|`<vszip, vship, turbo-metrics>,<vszip>`|Choose each metric implementation. First is SSIMULACRA2, second is XPSNR|
+|`-M, --metrics-implementations`|`vship,vszip`|`<vszip, vship, turbo-metrics>,<vszip>`|Choose each metric implementation. First is SSIMULACRA2, second is XPSNR|
 |`-v --video-params`|||Encoder parameters for Av1an|
 |`-ef, --encoder-framework`|`av1an`|`av1an`|Encoding framework to use|
 |`-o, --output`|Input file directory||Output file for final encode|

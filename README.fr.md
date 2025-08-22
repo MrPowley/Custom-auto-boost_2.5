@@ -49,11 +49,11 @@ Optionellement :
 |`-d, -deviation`|`10`|`0`-`63`|Écart maximum du CRF de base|
 |`--max-positive-dev`||`0`-`63`|Écart maximum positif du CRF de base|
 |`--max-negative-dev`||`0`-`63`|Écart maximum négatif du CRF de base|
-|`-p, --preset`|`8`|`-1`-`13`|Preset SVT-AV1 à utiliser|
+|`-p, --preset`|`6`|`-1`-`13`|Preset SVT-AV1 à utiliser|
 |`-w, --workers`|Nombre de coeurs CPU| `1`-`Any`|Nombre de workers Av1an|
 |`-m, --method`|`1`|`1`, `2`, `3`, `4`|Méthode de calcul des zones(1: SSIMU2, 2: XPSNR, 3: Multiplié, 4: Minimum)|
 |`-a, --aggressiveness`|`20` ou `40`|`0` - `Any`|Choisir l'agréssivité du boost|
-|`-M, --metrics-implementations`|`vszip,vszip`|`<vszip, vship, turbo-metrics>,<vszip>`|Choisir l'implémentation de chaque métrique. Premier: SSIMULACRA2, deuxième: XPSNR|
+|`-M, --metrics-implementations`|`vship,vszip`|`<vszip, vship, turbo-metrics>,<vszip>`|Choisir l'implémentation de chaque métrique. Premier: SSIMULACRA2, deuxième: XPSNR|
 |`-v --video-params`|||Paramètres d'encodeur pour Av1an|
 |`-ef, --encoder-framework`|`av1an`|`av1an`|Framework d'encodage à utiliser|
 |`-o, --output`|Dossier de la vidéo original||Fichier de sortie pour l'encodage final|

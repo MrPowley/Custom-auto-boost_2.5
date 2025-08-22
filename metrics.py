@@ -2,53 +2,65 @@ from pathlib import Path
 import json
 import subprocess
 # import shutil
+from abc import ABC, abstractmethod
 
 import vapoursynth as vs
 
 core = vs.core
 core.max_cache_size = 1024
 
-class VSMetrics:
-    """Vapoursynth metrics calculation"""
+class Metrics(ABC):
+    """Metric abstract class"""
     def __init__(
-            self, source_file: Path, encoded_file: Path, json_path: Path = None,
-            skip: int = 1, update_callback_func = lambda x: None) -> None:
-        self.source_file = source_file
-        self.encoded_file = encoded_file
+            self, input_path: Path, output_path: Path, json_path: Path, skip: int, callback
+            ) -> None:
+        self.input_path = input_path
+        self.output_path = output_path
         self.json_path = json_path
         self.skip = skip
-        self.callback = update_callback_func
+        self.callback = callback
+        self.scores = []
 
+    @abstractmethod
+    def get_length(self) -> None|int:
+        """Returns the input video length in number of frames"""
+
+    @abstractmethod
+    def run(self) -> int:
+        """Runs the metric calculation"""
+
+    def save_scores(self, metric: str):
+        """Saves the Metric scores in a json format"""
+        with open(self.json_path, "w", encoding="utf-8") as file:
+            json.dump({"skip": self.skip, metric: self.scores}, file)
+
+class VSMetrics(Metrics):
+    """VS Metrics class"""
+    def __init__(
+            self, input_path: Path, output_path: Path, json_path: Path, skip: int, callback
+            ) -> None:
+        super().__init__(input_path, output_path, json_path, skip, callback)
         self.source_clip = None
         self.encoded_clip = None
+
         self.cut_source_clip = None
         self.cut_encoded_clip = None
 
-        self.scores = []
-
-        self.post_init()
-
-    def post_init(self):
-        """After init method"""
         self.load_clips()
         self.cut_clips()
 
-    def set_json_path(self, json_path: Path):
-        """Set json path"""
-        self.json_path = json_path
-
     def load_clips(self) -> None:
         """Load clips as vs objects and handles vpy input scripts"""
-        is_vpy = self.source_file.suffix == ".vpy"
+        is_vpy = self.input_path.suffix == ".vpy"
         vpy_vars = {}
         if is_vpy:
-            exec(open(self.source_file).read(), globals(), vpy_vars)
+            exec(open(self.input_path).read(), globals(), vpy_vars)
 
         if not is_vpy:
-            self.source_clip = core.lsmas.LWLibavSource(source=self.source_file, cache=0)
+            self.source_clip = core.lsmas.LWLibavSource(source=self.input_path, cache=0)
         else:
             self.source_clip = vpy_vars["clip"]
-        self.encoded_clip = core.lsmas.LWLibavSource(source=self.encoded_file, cache=0)
+        self.encoded_clip = core.lsmas.LWLibavSource(source=self.output_path, cache=0)
 
     def cut_clips(self):
         """Cuts the clips every <skip> frames"""
@@ -59,11 +71,12 @@ class VSMetrics:
             self.cut_source_clip = self.source_clip
             self.cut_encoded_clip = self.encoded_clip
 
-    def get_length(self) -> int:
-        """Returns the number of frames of the source clip"""
+    def get_length(self):
         return len(self.source_clip)
 
-    def xpsnr_vszip(self):
+class VSzipXPSNR(VSMetrics):
+    """VSZIP XPSNR class"""
+    def run(self):
         """Runs the vszip XPSNR calculation and weights the scores"""
         result = core.vszip.XPSNR(self.cut_source_clip, self.cut_encoded_clip)
         for frame in result.frames():
@@ -76,8 +89,11 @@ class VSMetrics:
             self.callback(self.skip)
 
         self.save_scores("XPSNR")
+        return 0
 
-    def ssimulacra2_vszip(self):
+class VSzipSSIMULACRA2(VSMetrics):
+    """VSZIP SSIMULACRA2 class"""
+    def run(self):
         """Runs the vszip SSIMULACRA2 calculation"""
         result = core.vszip.SSIMULACRA2(self.cut_source_clip, self.cut_encoded_clip)
 
@@ -87,71 +103,61 @@ class VSMetrics:
             self.callback(self.skip)
 
         self.save_scores("SSIMULACRA2")
+        return 0
 
-    def ssimulcara2_vship(self):
+class VShipSSIMULACRA2(VSMetrics):
+    """VSHIP SSIMULACRA class"""
+    def run(self):
         """Runs the vship SSIMULACRA calculation"""
-        result = core.vship.SSIMULACRA2(self.cut_source_clip, self.cut_encoded_clip)
+        try:
+            result = core.vship.SSIMULACRA2(self.cut_source_clip, self.cut_encoded_clip)
 
-        for frame in result.frames():
-            score = frame.props['_SSIMULACRA2']
-            self.scores.append(score)
-            self.callback(self.skip)
+            for frame in result.frames():
+                score = frame.props['_SSIMULACRA2']
+                self.scores.append(score)
+                self.callback(self.skip)
 
-        self.save_scores("SSIMULACRA2")
+            self.save_scores("SSIMULACRA2")
+        except AttributeError:
+            print("\nvship plugin not installed\n")
+            return 1
+        return 0
 
-    def save_scores(self, metric):
-        """Saves the XPSNR scores in a json format"""
-        with open(self.json_path, "w", encoding="utf-8") as file:
-            json.dump({"skip": self.skip, metric: self.scores}, file)
-
-class TurboMetrics:
-    """Turbo-metrics SSIMULACRA2 calculation"""
-    def __init__(
-            self, source_file: Path, encoded_file: Path, json_path: Path = None,
-            skip: int = 1, update_callback_func = lambda x: None) -> None:
-        self.source_file = source_file
-        self.encoded_file = encoded_file
-        self.json_path = json_path
-        self.skip = skip
-        self.callback = update_callback_func
-
-        self.scores = []
-
-    def run(self, metric: str):
+class TurboMetricsSSIMULACRA2(Metrics):
+    def run(self):
         """Runs the turbo-metrics calculation"""
         turbo_cmd = [
             "turbo-metrics",
-            "-m", metric,
+            "-m", "ssimulacra2", # Metric
             "--output", "json-lines",
             "--every", str(self.skip),
-            str(self.source_file), str(self.encoded_file)
+            str(self.input_path), str(self.output_path)
         ]
 
-        turbo_process = subprocess.Popen(
-            turbo_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            turbo_process = subprocess.Popen(
+                turbo_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        except FileNotFoundError:
+            print("\nTurbo-metrics not found\n")
+            return 1
 
         for line in turbo_process.stdout:
             content = json.loads(line)
             if not "frame_count" in content:
-                score = content[metric]
+                score = content["ssimulacra2"] # Metric
                 self.scores.append(score)
                 self.callback(self.skip)
 
         for line in turbo_process.stderr:
             if "MkvUnknownCodec" in line:
-                raise Exception(
-                    "Turbo-metrics has failed. It only supports av1, h264 and h262 input codecs")
+                print("\nTurbo-metrics has failed. It only supports av1, h264 and h262 input codecs\n")
+                return 1
 
         turbo_process.wait()
         # returncode = turbo_process.returncode
 
-        self.save_scores(metric)
+        self.save_scores("SSIMULACRA2")
+        return 0
 
-    def get_length(self):
-        """(WIP) Supposed to return the length of the video"""
+    def get_length(self) -> None | int:
         return None
-
-    def save_scores(self, metric: str):
-        """Saves the turbo-metrics scores in a json format"""
-        with open(self.json_path, "w", encoding="utf-8") as file:
-            json.dump({"skip": self.skip, metric: self.scores}, file)
