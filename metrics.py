@@ -1,13 +1,18 @@
 from pathlib import Path
 import json
 import subprocess
-# import shutil
+import platform
 from abc import ABC, abstractmethod
+import os
+import re
 
 import vapoursynth as vs
 
 core = vs.core
 core.max_cache_size = 1024
+
+IS_WINDOWS = platform.system() == 'Windows'
+NULL_DEVICE = 'NUL' if IS_WINDOWS else '/dev/null'
 
 class Metrics(ABC):
     """Metric abstract class"""
@@ -150,7 +155,8 @@ class TurboMetricsSSIMULACRA2(Metrics):
 
         for line in turbo_process.stderr:
             if "MkvUnknownCodec" in line:
-                print("\nTurbo-metrics has failed. It only supports av1, h264 and h262 input codecs\n")
+                print("\nTurbo-metrics has failed." \
+                      "t only supports av1, h264 and h262 input codecs\n")
                 return 1
 
         turbo_process.wait()
@@ -161,3 +167,74 @@ class TurboMetricsSSIMULACRA2(Metrics):
 
     def get_length(self) -> None | int:
         return None
+
+class FFmpegXPSNR(Metrics):
+    """FFmpeg XPSNR class"""
+    def __init__(self, input_path: Path, output_path: Path, json_path: Path, skip: int, callback) -> None:
+        super().__init__(input_path, output_path, json_path, skip, callback)
+        if IS_WINDOWS:
+            self.xpsnr_tmp_stats_path = Path("xpsnr.log")
+            src_file_dir = input_path.parent
+            os.chdir(src_file_dir)
+        else:
+            self.xpsnr_tmp_stats_path = Path("xpsnr.log")
+    
+    def run(self) -> int:
+        xpsnr_command = [
+            'ffmpeg',
+            '-i', str(self.input_path),
+            '-i', str(self.output_path),
+            '-lavfi', f'xpsnr=stats_file={str(self.xpsnr_tmp_stats_path)}',
+            '-f', 'null', NULL_DEVICE
+        ]
+
+        previous_frame_progress = 0
+
+        try:
+            xpsnr_process = subprocess.Popen(xpsnr_command, stdout=subprocess.PIPE,
+                                             stderr=subprocess.STDOUT,universal_newlines=True)
+            for line in xpsnr_process.stdout:
+                match = re.search(r'frame=\s*(\d+)', line)
+                if match:
+                    current_frame_progress = int(match.group(1))
+                    delta = current_frame_progress - previous_frame_progress
+                    previous_frame_progress = current_frame_progress
+                    self.callback(delta)
+
+        except subprocess.CalledProcessError as e:
+            print(f'XPSNR encountered an error:\n{e}')
+            return 1
+    
+        self.scores = self.evaluate_xpsnr_log(self.xpsnr_tmp_stats_path)
+        self.save_scores("XPSNR")
+
+        self.xpsnr_tmp_stats_path.unlink()
+
+        return 0
+    
+    def evaluate_xpsnr_log(self, xpsnr_log_path: Path) -> list[float]:
+        """Reads XPSNR log file and returns the list of weighted values"""
+        values_weighted: list[float] = []
+        with open(xpsnr_log_path, "r") as file:
+            for line in file.readlines():
+                match = re.search(
+                    r"XPSNR [yY]: ([0-9]+\.[0-9]+|inf)  XPSNR [uU]: ([0-9]+\.[0-9]+|inf)  XPSNR [vV]: ([0-9]+\.[0-9]+|inf)",
+                    line)
+                if match:
+                    y = float(match.group(1)) if match.group(1) != 'inf' else 100.0
+                    u = float(match.group(2)) if match.group(2) != 'inf' else 100.0
+                    v = float(match.group(3)) if match.group(3) != 'inf' else 100.0
+                    w = (4 * y + u + v) / 6
+                    values_weighted.append(w)
+
+        average_weighted = sum(values_weighted) / len(values_weighted)
+
+        values_weighted_averaged = [value_weighted / average_weighted
+                                    for value_weighted in values_weighted]
+
+        return values_weighted_averaged
+
+    def get_length(self) -> None | int:
+        return None
+
+        

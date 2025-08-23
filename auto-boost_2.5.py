@@ -175,10 +175,12 @@ def calculate_xpsnr(
         source_file: Path, output_file: Path, json_path: Path, implementation: dict) -> None:
     """Handles implementation and calls the appropriated XPSNR calculation method"""
     implementation_handlers = {
-        "vszip": [metrics.VSzipXPSNR]
+        "vszip": [metrics.VSzipXPSNR],
+        "ffmpeg": [metrics.FFmpegXPSNR, metrics.VSzipXPSNR]
     }
 
     for handler in implementation_handlers.get(implementation["implementation"]):
+        print(f"Running {handler}")
         metric = init_metric(
             source_file, output_file, json_path, implementation["skip"], handler, "XPSNR")
         returncode = metric.run()
@@ -383,7 +385,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("-a", "--aggressiveness", type=float, default=20.0,
                         help="Choose aggressiveness, use 40 for more aggressive (Default: 20.0)")
     parser.add_argument("-M","--metrics-implementations", default="vship,vszip", type=str,
-                        help="Metrics calculation implementation SSIMULACRA2,XPSNR (Default: vship,vszip)")
+                        help="Metrics calculation implementation SSIMULACRA2,XPSNR"
+                        " (Default: vship,vszip)")
     parser.add_argument("-v","--video-params", default="",
                         help="Custom encoder parameters for av1an")
     parser.add_argument("-ef", "--encoder-framework", choices=["av1an", "builtin"],
@@ -394,15 +397,22 @@ def parse_args() -> argparse.Namespace:
                         help="Output file path for final encode (Default: input directory)")
     return parser.parse_args()
 
-def resolve_implementation(string: str) -> dict:
+def resolve_implementation(string: str, method: int) -> dict:
     """Handles the metric-implementation arg"""
     implementations = string.split(",")
     if len(implementations) < 2:
         implementations += [""]
 
+    if method == 2:
+        ssimulacra2_index = 1
+        xpsnr_index = 0
+    else:
+        ssimulacra2_index = 0
+        xpsnr_index = 1
+
     implementations_dict = {
-        "ssimulacra2": {"implementation": implementations[0], "skip": 1},
-        "xpsnr": {"implementation": implementations[1], "skip": 1}
+        "ssimulacra2": {"implementation": implementations[ssimulacra2_index], "skip": 1},
+        "xpsnr": {"implementation": implementations[xpsnr_index], "skip": 1}
     }
 
     # Handle SSIMULACRA2
@@ -416,7 +426,7 @@ def resolve_implementation(string: str) -> dict:
     # Handle xpsnr
     if (
         not implementations_dict["xpsnr"]["implementation"]
-         or implementations_dict["xpsnr"]["implementation"] not in ("vszip")
+         or implementations_dict["xpsnr"]["implementation"] not in ("vszip", "ffmpeg")
         ):
         implementations_dict["xpsnr"]["implementation"] = "vszip"
 
@@ -458,7 +468,7 @@ def main():
     max_neg_dev: float|None = args.max_negative_dev
     aggressiveness: float = args.aggressiveness
 
-    metric_implementation = resolve_implementation(args.metrics_implementations)
+    metric_implementation = resolve_implementation(args.metrics_implementations, method)
 
     # Encoding Parameters
     crf: float = args.crf

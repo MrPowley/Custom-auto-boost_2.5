@@ -18,6 +18,7 @@ Requirements:
 Optionally: 
 - [turbo-metrics](https://github.com/Gui-Yom/turbo-metrics)
 - [vship](https://github.com/Line-fr/Vship)
+- ffmpeg with XPSNR
 
 # Notable changes from original
 - Added a progressbar to the turbo-metrics calculation
@@ -52,7 +53,7 @@ Optionally:
 |`-w, --workers`|CPU core count| `1`-`Any`|Number of Av1an workers|
 |`-m, --method`|`1`|`1`, `2`, `3`, `4`|Zones calculation method (1: SSIMU2, 2: XPSNR, 3: Multiplied, 4: Minimum)|
 |`-a, --aggressiveness`|`20` or `40`|`0` - `Any`|Choose boosting aggressiveness|
-|`-M, --metrics-implementations`|`vship,vszip`|`<vszip, vship, turbo-metrics>,<vszip>`|Choose each metric implementation. First is SSIMULACRA2, second is XPSNR|
+|`-M, --metrics-implementations`|`vship,vszip`|`<vszip, vship, turbo-metrics>,<vszip, ffmpeg>`|Choose each metric implementation. First is SSIMULACRA2, second is XPSNR|
 |`-v --video-params`|||Encoder parameters for Av1an|
 |`-ef, --encoder-framework`|`av1an`|`av1an`|Encoding framework to use|
 |`-o, --output`|Input file directory||Output file for final encode|
