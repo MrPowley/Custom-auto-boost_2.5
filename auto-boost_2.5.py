@@ -374,11 +374,18 @@ def parse_args() -> argparse.Namespace:
                         help="Maximum allowed negative CRF deviation | Default: None")
     parser.add_argument("-p", "--preset", type=int, default=6,
                         help="Fast encode preset (Default: 6)")
+    parser.add_argument("-p1", "--fast-preset", type=int,
+                        help="Fast pass preset")
+    parser.add_argument("-p2", "--final-preset", type=int,
+                        help="Final pass preset")
     parser.add_argument("-w", "--workers", type=int, default=psutil.cpu_count(logical=False),
                         help="Number of av1an workers (Default: Depends on physical cores number)")
-    # parser.add_argument("-S", "--skip", type=int,
-    #                     help="Skip value, the metric is calculated every nth frames"
-    #                     " (Default: 1 for turbo-metrics/vship, 3 for vs-zip)")
+    parser.add_argument("-S", "--skip", type=int,
+                        help="Skip value, the metric is calculated every nth frames (Default: 1)")
+    parser.add_argument("--ssimulacra2-skip", type=int,
+                        help="SSIMULACRA2 Skip value")
+    parser.add_argument("--xpsnr-skip", type=int,
+                        help="XPSNR skip value")
     parser.add_argument("-m", "--method",type=int, default=1, choices=[1, 2, 3, 4],
                         help="Zones calculation method: 1 = SSIMU2, 2 = XPSNR,"
                         " 3 = Multiplication, 4 = Lowest Result (Default: 1)")
@@ -397,7 +404,8 @@ def parse_args() -> argparse.Namespace:
                         help="Output file path for final encode (Default: input directory)")
     return parser.parse_args()
 
-def resolve_implementation(string: str, method: int) -> dict:
+def resolve_implementation(
+        string: str, method: int, ssimulacra2_skip: int, xpsnr_skip: int) -> dict:
     """Handles the metric-implementation arg"""
     implementations = string.split(",")
     if len(implementations) < 2:
@@ -410,9 +418,14 @@ def resolve_implementation(string: str, method: int) -> dict:
         ssimulacra2_index = 0
         xpsnr_index = 1
 
+    ssimulacra2_skip_value = ssimulacra2_skip if ssimulacra2_skip is not None else 1
+    xpsnr_skip_value = xpsnr_skip if xpsnr_skip is not None else 1
+
     implementations_dict = {
-        "ssimulacra2": {"implementation": implementations[ssimulacra2_index], "skip": 1},
-        "xpsnr": {"implementation": implementations[xpsnr_index], "skip": 1}
+        "ssimulacra2": {
+            "implementation": implementations[ssimulacra2_index], "skip": ssimulacra2_skip_value},
+        "xpsnr": {
+            "implementation": implementations[xpsnr_index], "skip": xpsnr_skip_value}
     }
 
     # Handle SSIMULACRA2
@@ -431,7 +444,7 @@ def resolve_implementation(string: str, method: int) -> dict:
         implementations_dict["xpsnr"]["implementation"] = "vszip"
 
     # Add skip for ssimulacra2 vszip
-    if implementations_dict["ssimulacra2"]["implementation"] == "vszip":
+    if implementations_dict["ssimulacra2"]["implementation"] == "vszip" and not ssimulacra2_skip:
         implementations_dict["ssimulacra2"]["skip"] = 3
 
     return implementations_dict
@@ -468,11 +481,27 @@ def main():
     max_neg_dev: float|None = args.max_negative_dev
     aggressiveness: float = args.aggressiveness
 
-    metric_implementation = resolve_implementation(args.metrics_implementations, method)
+    ssimulacra2_skip = args.ssimulacra2_skip
+    xpsnr_skip = args.xpsnr_skip
+
+    if args.skip and not ssimulacra2_skip:
+        ssimulacra2_skip = args.skip
+    if args.skip and not xpsnr_skip:
+        xpsnr_skip = args.skip
+
+    metric_implementation = resolve_implementation(
+        args.metrics_implementations, method, ssimulacra2_skip, xpsnr_skip)
 
     # Encoding Parameters
+    fast_pass_preset = args.fast_preset
+    final_pass_preset = args.final_preset
+
+    if args.preset and not fast_pass_preset:
+        fast_pass_preset = args.preset
+    if args.preset and not final_pass_preset:
+        final_pass_preset = args.preset
+
     crf: float = args.crf
-    preset: int = args.preset
     video_params: str = args.video_params
 
     # encoder_framework: str = args.encoder_framework
@@ -505,7 +534,7 @@ def main():
     match stage:
         case 0:
             av1an = encoders.Av1an(src_file, workers, video_params)
-            av1an.fast_pass(fastpass_path, fastpass_temp_dir, scenes_path, preset=8, crf=crf)
+            av1an.fast_pass(fastpass_path, fastpass_temp_dir, scenes_path, fast_pass_preset, crf)
 
             ranges = get_ranges(scenes_path)
 
@@ -514,10 +543,10 @@ def main():
                             video_params, max_pos_dev, max_neg_dev,
                             base_deviation, aggressiveness, workers)
 
-            av1an.final_pass(output_file, finalpass_temp_dir, zones_path, preset=2)
+            av1an.final_pass(output_file, finalpass_temp_dir, zones_path, final_pass_preset)
         case 1:
             av1an = encoders.Av1an(src_file, workers, video_params)
-            av1an.fast_pass(fastpass_path, fastpass_temp_dir, scenes_path, preset, crf)
+            av1an.fast_pass(fastpass_path, fastpass_temp_dir, scenes_path, fast_pass_preset, crf)
         case 2:
             calculate_metrics(src_file, fastpass_path, tmp_dir, method, metric_implementation)
         case 3:
@@ -527,7 +556,7 @@ def main():
                             base_deviation, aggressiveness, workers)
         case 4:
             av1an = encoders.Av1an(src_file, workers, video_params)
-            av1an.final_pass(output_file, finalpass_temp_dir, zones_path, preset)
+            av1an.final_pass(output_file, finalpass_temp_dir, zones_path, final_pass_preset)
     return None
 
 
