@@ -372,21 +372,21 @@ def parse_args() -> argparse.Namespace:
                         help="Maximum allowed positive CRF deviation (Default: None)")
     parser.add_argument("--max-negative-dev", type=float, default=None,
                         help="Maximum allowed negative CRF deviation | Default: None")
-    parser.add_argument("-p", "--preset", type=int, default=6,
-                        help="Fast encode preset (Default: 6)")
-    parser.add_argument("-p1", "--fast-preset", type=int,
+    parser.add_argument("-p", "--preset", type=int,
+                        help="Fast encode preset")
+    parser.add_argument("-p1", "--fast-preset (Default: 7)", type=int, default=7,
                         help="Fast pass preset")
-    parser.add_argument("-p2", "--final-preset", type=int,
+    parser.add_argument("-p2", "--final-preset (Default: 6)", type=int, default=6,
                         help="Final pass preset")
     parser.add_argument("-w", "--workers", type=int, default=psutil.cpu_count(logical=False),
                         help="Number of av1an workers (Default: Depends on physical cores number)")
-    parser.add_argument("-S", "--skip", type=int,
-                        help="Skip value, the metric is calculated every nth frames (Default: 1)")
+    parser.add_argument("-S", "--skip", type=int, default=3,
+                        help="Skip value, the metric is calculated every nth frames (Default: 3)")
     parser.add_argument("--ssimulacra2-skip", type=int,
                         help="SSIMULACRA2 Skip value")
     parser.add_argument("--xpsnr-skip", type=int,
                         help="XPSNR skip value")
-    parser.add_argument("-m", "--method",type=int, default=1, choices=[1, 2, 3, 4],
+    parser.add_argument("-m", "--method",type=int, default=3, choices=[1, 2, 3, 4],
                         help="Zones calculation method: 1 = SSIMU2, 2 = XPSNR,"
                         " 3 = Multiplication, 4 = Lowest Result (Default: 1)")
     parser.add_argument("-a", "--aggressiveness", type=float, default=20.0,
@@ -454,7 +454,7 @@ def main():
     args = parse_args()
 
     # Directories / Files
-    src_file: Path = Path(args.input).resolve()
+    src_file: Path = Path(args.input)
     output_dir: Path = src_file.parent
 
     if args.temp is not None:
@@ -484,9 +484,8 @@ def main():
     ssimulacra2_skip = args.ssimulacra2_skip
     xpsnr_skip = args.xpsnr_skip
 
-    if args.skip and not ssimulacra2_skip:
+    if args.skip:
         ssimulacra2_skip = args.skip
-    if args.skip and not xpsnr_skip:
         xpsnr_skip = args.skip
 
     metric_implementation = resolve_implementation(
