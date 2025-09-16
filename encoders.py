@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from pathlib import Path
 import subprocess
+from typing import Optional
 
 class EncodingFramework(ABC):
     """Encoder framework abstract base class"""
@@ -8,7 +9,7 @@ class EncodingFramework(ABC):
             self,
             input_path: Path,
             workers: int,
-            video_parameters: str,
+            video_parameters: str = "",
             encoder: str = "svt-av1"
             ) -> None:
         self.input_path = input_path
@@ -23,20 +24,40 @@ class EncodingFramework(ABC):
 
     @abstractmethod
     def fast_pass(
-        self, output_path: Path, temp_dir: Path, scenes_path: Path, preset: int, crf: float
-        ):
+        self,
+        output_path: Path,
+        temp_dir: Path | None = None,
+        scenes_path: Path | None = None,
+        preset: int |None = None,
+        crf: float | None = None,
+        ) -> None:
         """Av1an fast pass encoding"""
 
     @abstractmethod
-    def final_pass(self, output_path: Path, temp_dir: Path, zones_path: Path, preset: int):
+    def final_pass(
+        self,
+        output_path: Path,
+        preset: int,
+        temp_dir: Optional[Path] = None,
+        zones_path: Optional[Path] = None,
+        ) -> None:
         """Av1an final pass encoding"""
 
 class Av1an(EncodingFramework):
     """Av1an encoding framework"""
     def fast_pass(
-            self, output_path: Path, temp_dir: Path, scenes_path: Path, preset: int, crf: float):
+            self,
+            output_path: Path,
+            temp_dir: Path | None = None,
+            scenes_path: Path | None = None,
+            preset: int | None = None,
+            crf: float | None = None,
+            ) -> None:
         encoder_parameters = self.fast_pass_encoder_parameters
-        encoder_parameters += f" --preset {preset} --crf {crf:.2f}"
+        if preset is not None:
+            encoder_parameters += f" --preset {preset}"
+        if crf is not None:
+            encoder_parameters += f" --crf {crf:.2f}"
 
         if self.video_parameters:
             encoder_parameters += f" {self.video_parameters}"
@@ -44,20 +65,24 @@ class Av1an(EncodingFramework):
         fast_av1an_command = [
             'av1an',
             '-i', str(self.input_path),
-            '--temp', str(temp_dir),
             '-y',
             '--verbose',
             '-m', 'lsmash',
             '-c', 'mkvmerge',
+            "-a", "-an", 
             '--min-scene-len', '24',
-            '--scenes', str(scenes_path),
             '--sc-downscale-height', '720',
             '--set-thread-affinity', '2',
-            '-e', 'svt-av1',
+            '-e', self.encoder,
             '-v', encoder_parameters,
             '-w', str(self.workers),
             '-o', str(output_path)
         ]
+
+        if temp_dir:
+            fast_av1an_command += ['--temp', str(temp_dir)]
+        if scenes_path:
+            fast_av1an_command += ['--scenes', str(scenes_path)]
 
         try:
             subprocess.run(fast_av1an_command, text=True, check=True)
@@ -65,34 +90,38 @@ class Av1an(EncodingFramework):
             print(f"Av1an encountered an error:\n{e}")
             exit(1)
 
-    def final_pass(self, output_path: Path, temp_dir: Path, zones_path: Path, preset: int):
+    def final_pass(
+            self,
+            output_path: Path,
+            preset: int,
+            temp_dir: Optional[Path] = None,
+            zones_path: Optional[Path] = None,
+            ) -> None:
         video_parameters = self.video_parameters
-        video_parameters += f"--preset {preset}"
+        video_parameters += f" --preset {preset}"
+        # --enable-variance-boost 1 --variance-boost-strength 1 --variance-octile 4 --luminance-qp-bias 10 --qm-min 0 --chroma-qm-min 0
 
         final_av1an_command = [
             "av1an",
             "-i", str(self.input_path),
-            "--temp", str(temp_dir),
             "-y",
             "--split-method", "none",
             "--verbose",
             "-c", "mkvmerge",
             '--force',
-            "-e", "svt-av1",
+            "-e", self.encoder,
             "-v", video_parameters,
-            "--zones", str(zones_path),
             "-o", str(output_path),
             "-w", str(self.workers)
         ]
+
+        if temp_dir is not None:
+            final_av1an_command += ["--temp", str(temp_dir)]
+        if zones_path is not None:
+            final_av1an_command += ["--zones", str(zones_path)]
 
         try:
             subprocess.run(final_av1an_command, text=True, check=True)
         except subprocess.CalledProcessError as e:
             print(f"Av1an encountered an error:\n{e}")
             exit(1)
-
-
-
-
-# av1an = Av1an(Path("G:/noamh/Code/Custom-auto-boost-2.5/test/sample.mkv"), "svt-av1", 8, "")
-# av1an.fast_pass(Path("G:/noamh/Code/Custom-auto-boost-2.5/test/out.mkv"), Path("G:/noamh/Code/Custom-auto-boost-2.5/test/sample"), Path("G:/noamh/Code/Custom-auto-boost-2.5/test/sample/scenes.json"), 8, 30.0)

@@ -5,6 +5,8 @@ import platform
 from abc import ABC, abstractmethod
 import os
 import re
+from statistics import mean, quantiles, median, stdev
+import time
 
 import vapoursynth as vs
 
@@ -17,14 +19,18 @@ NULL_DEVICE = 'NUL' if IS_WINDOWS else '/dev/null'
 class Metrics(ABC):
     """Metric abstract class"""
     def __init__(
-            self, input_path: Path, output_path: Path, json_path: Path, skip: int, callback
+            self,
+            input_path: Path, output_path: Path, skip: int = 1, callback = lambda x: None,
+            json_path: Path | None = None, save: bool = False
             ) -> None:
         self.input_path = input_path
         self.output_path = output_path
         self.json_path = json_path
+        self.save = save
         self.skip = skip
         self.callback = callback
         self.scores = []
+        self.run_time = 0
 
     @abstractmethod
     def get_length(self) -> None|int:
@@ -34,17 +40,74 @@ class Metrics(ABC):
     def run(self) -> int:
         """Runs the metric calculation"""
 
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        original_run = cls.run
+
+        def timed_run(self, *args, **kwargs):
+            start = time.perf_counter()
+            result = original_run(self, *args, **kwargs)
+            end = time.perf_counter()
+            self.run_time = end - start  # store elapsed time in instance
+            return result
+
+        cls.run = timed_run
+
     def save_scores(self, metric: str):
         """Saves the Metric scores in a json format"""
         with open(self.json_path, "w", encoding="utf-8") as file:
             json.dump({"skip": self.skip, metric: self.scores}, file)
 
+    @staticmethod
+    def get_metric(json_path: Path, metric: str) -> tuple[list[float], int]:
+        """Reads from a json file and returns the metric scores and skip values"""
+        scores: list[float] = []
+
+        with open(json_path, "r", encoding="utf-8") as file:
+            content = json.load(file)
+            skip: int = content["skip"]
+            scores = content[metric]
+
+        return scores, skip
+
+    def calculate_metrics_stats(self) -> tuple[float, float, float, float, float, float, float]:
+        """
+        Takes a list of metrics scores and returns the associated arithmetic mean,
+        5th percentile and 95th percentile scores.
+
+        :param score_list: list of SSIMU2 scores
+        :type score_list: list
+        """
+
+        scores_minimum = min(self.scores)
+        self.scores = [score if score >= 0 else 0.0 for score in self.scores]
+
+        scores_average = mean(self.scores)
+        scores_maximum = max(self.scores)
+        scores_percentiles = quantiles(self.scores, n=100)
+        scores_low_percentile = scores_percentiles[4]
+        scores_high_percentile = scores_percentiles[94]
+        scores_median = median(self.scores)
+        scores_standard_deviation = stdev(self.scores)
+
+        return (
+            scores_average, scores_standard_deviation,
+            scores_median, scores_low_percentile,
+            scores_high_percentile, scores_minimum, scores_maximum
+        )
+
 class VSMetrics(Metrics):
     """VS Metrics class"""
     def __init__(
-            self, input_path: Path, output_path: Path, json_path: Path, skip: int, callback
+            self,
+            input_path: Path,
+            output_path: Path,
+            json_path: Path | None = None,
+            skip: int = 1,
+            callback = lambda x: None,
+            save = False,
             ) -> None:
-        super().__init__(input_path, output_path, json_path, skip, callback)
+        super().__init__(input_path, output_path, skip, callback, json_path, save)
         self.source_clip = None
         self.encoded_clip = None
 
@@ -62,22 +125,29 @@ class VSMetrics(Metrics):
             exec(open(self.input_path).read(), globals(), vpy_vars)
 
         if not is_vpy:
-            self.source_clip = core.lsmas.LWLibavSource(source=self.input_path, cache=0)
+            self.source_clip: vs.VideoNode = core.lsmas.LWLibavSource(source=self.input_path, cache=0)
         else:
-            self.source_clip = vpy_vars["clip"]
-        self.encoded_clip = core.lsmas.LWLibavSource(source=self.output_path, cache=0)
+            self.source_clip: vs.VideoNode = vpy_vars["clip"]
+        self.encoded_clip: vs.VideoNode = core.lsmas.LWLibavSource(source=self.output_path, cache=0)
 
     def cut_clips(self):
         """Cuts the clips every <skip> frames"""
         if self.skip > 1:
-            self.cut_source_clip = self.source_clip.std.SelectEvery(cycle=self.skip, offsets=1)
-            self.cut_encoded_clip = self.encoded_clip.std.SelectEvery(cycle=self.skip, offsets=1)
+            self.cut_source_clip = self.source_clip[::self.skip]
+            self.cut_encoded_clip = self.encoded_clip[::self.skip]
         else:
             self.cut_source_clip = self.source_clip
             self.cut_encoded_clip = self.encoded_clip
 
-    def get_length(self):
+    def get_length(self) -> int:
         return len(self.source_clip)
+
+    def get_duration(self) -> float:
+        """Calculates and returns the input video duration"""
+        length = self.get_length()
+        fps = self.source_clip.fps.numerator / self.source_clip.fps.denominator
+        return round(length / fps, 3)
+
 
 class VSzipXPSNR(VSMetrics):
     """VSZIP XPSNR class"""
@@ -93,7 +163,8 @@ class VSzipXPSNR(VSMetrics):
             self.scores.append(w)
             self.callback(self.skip)
 
-        self.save_scores("XPSNR")
+        if self.save:
+            self.save_scores("XPSNR")
         return 0
 
 class VSzipSSIMULACRA2(VSMetrics):
@@ -107,7 +178,8 @@ class VSzipSSIMULACRA2(VSMetrics):
             self.scores.append(score)
             self.callback(self.skip)
 
-        self.save_scores("SSIMULACRA2")
+        if self.save:
+            self.save_scores("SSIMULACRA2")
         return 0
 
 class VShipSSIMULACRA2(VSMetrics):
@@ -115,20 +187,23 @@ class VShipSSIMULACRA2(VSMetrics):
     def run(self):
         """Runs the vship SSIMULACRA calculation"""
         try:
-            result = core.vship.SSIMULACRA2(self.cut_source_clip, self.cut_encoded_clip)
+            result = core.vship.SSIMULACRA2(
+                self.cut_source_clip, self.cut_encoded_clip, numStream=4)
 
             for frame in result.frames():
                 score = frame.props['_SSIMULACRA2']
                 self.scores.append(score)
                 self.callback(self.skip)
 
-            self.save_scores("SSIMULACRA2")
+            if self.save:
+                self.save_scores("SSIMULACRA2")
         except AttributeError:
             print("\nvship plugin not installed\n")
             return 1
         return 0
 
 class TurboMetricsSSIMULACRA2(Metrics):
+    """Turbo Metrics SSIMULACRA2"""
     def run(self):
         """Runs the turbo-metrics calculation"""
         turbo_cmd = [
@@ -146,14 +221,14 @@ class TurboMetricsSSIMULACRA2(Metrics):
             print("\nTurbo-metrics not found\n")
             return 1
 
-        for line in turbo_process.stdout:
+        for line in turbo_process.stdout: # pyright: ignore[reportOptionalIterable]
             content = json.loads(line)
             if not "frame_count" in content:
                 score = content["ssimulacra2"] # Metric
                 self.scores.append(score)
                 self.callback(self.skip)
 
-        for line in turbo_process.stderr:
+        for line in turbo_process.stderr: # pyright: ignore[reportOptionalIterable]
             if "MkvUnknownCodec" in line:
                 print("\nTurbo-metrics has failed." \
                       "t only supports av1, h264 and h262 input codecs\n")
@@ -162,7 +237,8 @@ class TurboMetricsSSIMULACRA2(Metrics):
         turbo_process.wait()
         # returncode = turbo_process.returncode
 
-        self.save_scores("SSIMULACRA2")
+        if self.save:
+            self.save_scores("SSIMULACRA2")
         return 0
 
     def get_length(self) -> None | int:
@@ -170,15 +246,19 @@ class TurboMetricsSSIMULACRA2(Metrics):
 
 class FFmpegXPSNR(Metrics):
     """FFmpeg XPSNR class"""
-    def __init__(self, input_path: Path, output_path: Path, json_path: Path, skip: int, callback) -> None:
-        super().__init__(input_path, output_path, json_path, skip, callback)
+    def __init__(
+            self,
+            input_path: Path, output_path: Path, skip: int = 1, callback = lambda x: None,
+            json_path: Path | None = None, save: bool = False
+            ) -> None:
+        super().__init__(input_path, output_path, skip, callback, json_path, save)
         if IS_WINDOWS:
             self.xpsnr_tmp_stats_path = Path("xpsnr.log")
             src_file_dir = input_path.parent
             os.chdir(src_file_dir)
         else:
             self.xpsnr_tmp_stats_path = Path("xpsnr.log")
-    
+
     def run(self) -> int:
         xpsnr_command = [
             'ffmpeg',
@@ -193,7 +273,7 @@ class FFmpegXPSNR(Metrics):
         try:
             xpsnr_process = subprocess.Popen(xpsnr_command, stdout=subprocess.PIPE,
                                              stderr=subprocess.STDOUT,universal_newlines=True)
-            for line in xpsnr_process.stdout:
+            for line in xpsnr_process.stdout: # pyright: ignore[reportOptionalIterable]
                 match = re.search(r'frame=\s*(\d+)', line)
                 if match:
                     current_frame_progress = int(match.group(1))
@@ -204,14 +284,16 @@ class FFmpegXPSNR(Metrics):
         except subprocess.CalledProcessError as e:
             print(f'XPSNR encountered an error:\n{e}')
             return 1
-    
+
         self.scores = self.evaluate_xpsnr_log(self.xpsnr_tmp_stats_path)
-        self.save_scores("XPSNR")
+
+        if self.save:
+            self.save_scores("XPSNR")
 
         self.xpsnr_tmp_stats_path.unlink()
 
         return 0
-    
+
     def evaluate_xpsnr_log(self, xpsnr_log_path: Path) -> list[float]:
         """Reads XPSNR log file and returns the list of weighted values"""
         values_weighted: list[float] = []
@@ -236,5 +318,3 @@ class FFmpegXPSNR(Metrics):
 
     def get_length(self) -> None | int:
         return None
-
-        

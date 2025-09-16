@@ -15,353 +15,561 @@
 from math import ceil
 from pathlib import Path
 import json
-import subprocess
 import argparse
+from typing import Optional
+from statistics import mean, quantiles
 
 import psutil
+from rich.console import Console
 
 import ui
 import metrics
 import encoders
 
-def get_ranges(scenes: Path) -> list[int]:
-    """
-    Reads a scene file and returns a list of frame numbers for each scene change.
+console = Console()
+verbose = False
 
-    Args:
-        scenes (Path): scenes.json path
+class AutoBoost:
+    """Auto boost class"""
+    def __init__(
+            self,
+            input_path: Path,
+            output_path: Optional[Path] = None,
+            temp_dir: Optional[Path] = None,
+            workers: Optional[int] = None,
+            video_parameters: str = '',
+            preset: Optional[int] = None,
+            fastpass_preset: Optional[int] = 6,
+            finalpass_preset: Optional[int] = 4,
+            crf: float = 30.0,
+            method: int = 3,
+            metrics_implementations: str = 'vship,vszip',
+            skip: Optional[int] = None,
+            ssimulacra2_skip: Optional[int] = None,
+            xpsnr_skip: Optional[int] = None,
+            base_deviation: float = 10.0,
+            max_positive_deviation: Optional[float] = None,
+            max_negative_deviation: Optional[float] = None,
+            aggressiveness: float = 20.0,
+            ) -> None:
+        self.input_path = input_path
+        self.video_parameters = video_parameters
+        self.crf = crf
+        self.metrics_implementations = metrics_implementations
+        self.base_deviation = base_deviation
+        self.max_positive_deviation = max_positive_deviation
+        self.max_negative_deviation = max_negative_deviation
+        self.aggressiveness = aggressiveness
 
-    Returns:
-        List of ranges (int)
-    """
-    ranges = [0]
+        self.ranges = [0]
+        self.average = 0.0
+        self.percentile_5_total = []
 
-    with open(scenes, 'r', encoding='utf-8') as file:
-        content = json.load(file)
-        for scene in content['scenes']:
-            ranges.append(scene['end_frame'])
+        self.av1an: encoders.EncodingFramework | None = None
 
-    return ranges
+        self.method = method
+        match self.method:
+            case 1:
+                self.metric = 'ssimulacra2'
+            case 2:
+                self.metric = 'xpsnr'
+            case 3:
+                self.metric = 'multiplied'
+            case 4:
+                self.metric = 'minimum'
 
-def get_metric(json_path: Path, metric: str) -> tuple[list[float], int]:
-    """Reads from a json file and returns the metric scores and skip values"""
-    scores: list[float] = []
-
-    with open(json_path, "r", encoding="utf-8") as file:
-        content = json.load(file)
-        skip: int = content["skip"]
-        scores = content[metric]
-
-    return scores, skip
-
-def calculate_percentile(scores: list[float], percentile: int) -> float:
-    """Inputs a sorted score list and output the 5th percentile"""
-    if 0 >= percentile > 100:
-        raise ValueError("Invalid 'percentile' value")
-
-    scores_length = len(scores)
-
-    fith_percent_index = percentile/100 * (scores_length + 1) - 1
-    frac_part = fith_percent_index % 1.0
-    lower_value = scores[int(fith_percent_index)]
-
-    if frac_part == 0:
-        percentile_value: float = lower_value
-    else:
-        upper_index = min(int(ceil(fith_percent_index)), scores_length - 1)
-        upper_value = scores[upper_index]
-        percentile_value: float = lower_value + frac_part * (upper_value - lower_value)
-
-    return percentile_value
-
-def calculate_std_dev(score_list: list[float]) -> tuple[float, float, float]:
-    """
-    Takes a list of metrics scores and returns the associated arithmetic mean,
-    5th percentile and 95th percentile scores.
-
-    :param score_list: list of SSIMU2 scores
-    :type score_list: list
-    """
-
-    filtered_score_list = [score if score >= 0 else 0.0 for score in score_list]
-    sorted_score_list = sorted(score_list)
-    percentile_5 = calculate_percentile(sorted_score_list, 5)
-    percentile_95 = calculate_percentile(sorted_score_list, 95)
-    average = sum(filtered_score_list)/len(filtered_score_list)
-
-    return average, percentile_5, percentile_95
-
-def generate_zones(ranges: list[int], percentile_5_total: list[float], average: float,
-                   crf: float, zones_txt_path: Path, video_params: str,
-                   max_pos_dev: float | None, max_neg_dev: float | None,
-                   base_deviation: float, aggressiveness: float, workers: int) -> None:
-    """
-    Appends a scene change to the ``zones_txt_path`` file in Av1an zones format.
-
-    creates ``zones_txt_path`` if it does not exist. If it does exist, the line is
-    appended to the end of the file.
-
-    :param ranges: Scene changes list
-    :type ranges: list
-    :param percentile_5_total: List containing all 5th percentile scores
-    :type percentile_5_total: list
-    :param average: Full clip average score
-    :type average: int
-    :param crf: CRF setting to use for the zone
-    :type crf: int
-    :param zones_txt_path: Path to the zones.txt file
-    :type zones_txt_path: str
-    :param video_params: custom encoder params for av1an
-    :type video_params: str
-    """
-    zones_iter = 0
-
-    # If only one is set, use base deviation as the other limit
-    if max_pos_dev is None:
-        max_pos_dev = base_deviation
-    if max_neg_dev is None:
-        max_neg_dev = base_deviation
-
-    for i in range(len(ranges)-1):
-        zones_iter += 1
-
-        # Calculate CRF adjustment using aggressive or normal multiplier
-        multiplier = aggressiveness
-        adjustment = ceil((1.0 - (percentile_5_total[i] / average)) * multiplier * 4) / 4
-        new_crf = crf - adjustment
-
-        # Calculation explanation
-        # percentile5/avg give a quality % of the frame compared to average.
-        # 1 = average (Good); <1 = lower than average (bad, needs up boost);
-        # >1 = higher than average (~bad, can be reduced)
-        # 1 - percentile5/avg inverts the previous ratio so the closer to zero,
-        # the better the frame, the further to zero the worst the frame
-        # * multiplier highlights the extremes so they get more boosted,
-        # the higher the multiplier, the more the frame is boosted
-        # ceil(... * 4 ) / 4 round the adjustment to 0.25
-
-        # Apply deviation limits
-        if adjustment < 0:  # Positive deviation (increasing CRF)
-            if max_pos_dev == 0:
-                new_crf = crf  # Never increase CRF if max_pos_dev is 0
-            elif abs(adjustment) > max_pos_dev:
-                new_crf = crf + max_pos_dev
-        else:  # Negative deviation (decreasing CRF)
-            if max_neg_dev == 0:
-                new_crf = crf  # Never decrease CRF if max_neg_dev is 0
-            elif abs(adjustment) > max_neg_dev:
-                new_crf = crf - max_neg_dev
-
-        # print(f'Enc:  [{ranges[i]}:{ranges[i+1]}]\n'
-        #       f'Chunk 5th percentile: {percentile_5_total[i]}\n'
-        #       f'CRF adjustment: {adjustment:.2f}\n'
-        #       f'Final CRF: {new_crf:.2f}\n')
-
-        zone_params = f"--crf {new_crf:.2f}"
-
-        if workers > 12:
-            zone_params += " --lp 2"
-
-        if video_params:  # Only append video_params if it exists and is not None
-            zone_params += f' {video_params}'
-
-        with open(zones_txt_path, "w" if zones_iter == 1 else "a", encoding="utf-8") as file:
-            file.write(f"{ranges[i]} {ranges[i+1]} svt-av1 {zone_params}\n")
-
-    print(f"Auto-Boost complete\nSee '{zones_txt_path}'")
-    return None
-
-def calculate_xpsnr(
-        source_file: Path, output_file: Path, json_path: Path, implementation: dict) -> None:
-    """Handles implementation and calls the appropriated XPSNR calculation method"""
-    implementation_handlers = {
-        "vszip": [metrics.VSzipXPSNR],
-        "ffmpeg": [metrics.FFmpegXPSNR, metrics.VSzipXPSNR]
-    }
-
-    for handler in implementation_handlers.get(implementation["implementation"]):
-        print(f"Running {handler}")
-        metric = init_metric(
-            source_file, output_file, json_path, implementation["skip"], handler, "XPSNR")
-        returncode = metric.run()
-        if returncode == 0:
-            return None
-    raise RuntimeError("All XPSNR metric implementations failed")
-
-def calculate_ssimulacra2(
-        source_file: Path, output_file: Path, json_path: Path, implementation: dict) -> None:
-    """Handles implementation and calls the appropriated SSIMULACRA2 calculation method"""
-
-    implementation_handlers = {
-        "turbo-metrics": [
-            metrics.TurboMetricsSSIMULACRA2,
-            metrics.VShipSSIMULACRA2,
-            metrics.VSzipSSIMULACRA2],
-        "vship": [
-            metrics.VShipSSIMULACRA2,
-            metrics.TurboMetricsSSIMULACRA2,
-            metrics.VSzipSSIMULACRA2],
-        "vszip": [
-            metrics.VSzipSSIMULACRA2]
-    }
-
-    for handler in implementation_handlers.get(implementation["implementation"]):
-        metric = init_metric(
-            source_file, output_file, json_path, implementation["skip"], handler, "SSIMULACRA2")
-        returncode = metric.run()
-        if returncode == 0:
-            return None
-    raise RuntimeError("All SSIMULACRA2 metric implementations failed")
-
-def init_metric(
-        source_file: Path, output_file: Path, json_path: Path,
-        skip: int, metric_class, metric_name: str):
-    """Initializes the metric and its progressbar"""
-    progressbar = ui.ProgressBar()
-    metric = metric_class(source_file, output_file, json_path, skip, progressbar.update_progressbar)
-
-    video_length = metric.get_length()
-
-    progressbar.initialize_progressbar(total=video_length, description=f"Calculating {metric_name}")
-
-    return metric
-
-def calculate_metrics(src_file: Path, output_file: Path, tmp_dir: Path,
-                      method: int, implementation: dict) -> None:
-    """Handles method arg to calculate appropriate metric"""
-    ssimu2_json_path = tmp_dir / f"{src_file.stem}_ssimulacra2.json"
-    xpsnr_json_path = tmp_dir / f"{src_file.stem}_xpsnr.json"
-
-    match method:
-        case 1:
-            calculate_ssimulacra2(
-                src_file, output_file, ssimu2_json_path, implementation["ssimulacra2"])
-        case 2:
-            calculate_xpsnr(src_file, output_file, xpsnr_json_path, implementation["xpsnr"])
-        case 3|4:
-            calculate_ssimulacra2(
-                src_file, output_file, ssimu2_json_path, implementation["ssimulacra2"])
-            calculate_xpsnr(src_file, output_file, xpsnr_json_path, implementation["xpsnr"])
-
-def calculate_zones(
-        src_file: Path, tmp_dir: Path, ranges: list[int],
-        method: int, cq: float, video_params: str,
-        max_pos_dev: float|None, max_neg_dev: float|None,
-        base_deviation: float, aggressiveness: float, workers: int
-        ) -> None:
-    """Calcules zones with chosen method and metric"""
-    match method:
-        case 1 | 2:
-            if method == 1:
-                metric = 'SSIMULACRA2'
+        if fastpass_preset is not None:
+            self.fastpass_preset = fastpass_preset
+        else:
+            if preset is not None:
+                self.fastpass_preset = preset
             else:
-                metric = 'xpsnr'
+                self.fastpass_preset = 6
 
-            metric_json_path = tmp_dir / f'{src_file.stem}_{metric}.json'
-            metric_scores, skip = get_metric(metric_json_path, metric)
+        if finalpass_preset is not None:
+            self.finalpass_preset = finalpass_preset
+        else:
+            if preset is not None:
+                self.finalpass_preset = preset
+            else:
+                self.finalpass_preset = 4
 
-            metric_zones_txt_path = tmp_dir / f'{metric}_zones.txt'
+        # Workers
+        if workers is not None:
+            self.workers: int = workers
+        else:
+            count: int | None = psutil.cpu_count(logical=False)
+            if count is None:
+                self.workers: int = 1
+            else:
+                self.workers: int = count
 
-            # Expand the scores list with dummy values
-            #  to the full length of the video to compensate the skip
-            metric_scores_expanded = []
-            for score in metric_scores:
-                metric_scores_expanded += [score] + [-1] * (skip - 1)
+        if ssimulacra2_skip is not None:
+            self.ssimulacra2_skip = ssimulacra2_skip
+        if xpsnr_skip is not None:
+            self.xpsnr_skip = xpsnr_skip
 
-            total_scores = []
-            percentile_5_total = []
-            for i in range(len(ranges) - 1):
-                if metric_scores_expanded[ranges[i]:ranges[i+1]]:
-                    chunk_scores_expanded = metric_scores_expanded[ranges[i]:ranges[i+1]]
-                    # Remove the dummy values
-                    chunk_scores = [score for score in chunk_scores_expanded if score != -1]
-                    # print(chunk_scores, chunk_scores_expanded)
-                    _, chunk_percentile_5, _ = calculate_std_dev(chunk_scores)
-                    percentile_5_total.append(chunk_percentile_5)
+        if ssimulacra2_skip is None:
+            self.ssimulacra2_skip = 3
+        if xpsnr_skip is None:
+            self.xpsnr_skip = 1
+
+        if skip is not None and self.ssimulacra2_skip is None:
+            self.ssimulacra2_skip: int = skip
+        if skip is not None and self.xpsnr_skip is None:
+            self.xpsnr_skip: int = skip
+
+        self.output_dir: Path = self.input_path.parent
+
+        # Output path
+        if output_path is not None:
+            self.output_path: Path = output_path
+        else:
+            self.output_path : Path = self.output_dir / f"{input_path.stem}_boosted.mkv"
+
+        # Temp dir
+        if temp_dir is not None:
+            self.temp_dir: Path = self.temp_dir.resolve()
+        else:
+            self.temp_dir: Path = self.input_path.parent / self.input_path.stem
+
+        self.fastpass_output_path: Path = self.temp_dir / "fastpass.mkv"
+        self.fastpass_temp_dir: Path = self.temp_dir / "fastpass"
+        self.finalpass_temp_dir: Path = self.temp_dir / "finalpass"
+        self.zones_path: Optional[Path] = self.temp_dir / f'{self.metric}_zones.txt'
+        self.scenes_path: Optional[Path] = self.temp_dir / "scenes.json"
+
+        self.metric_implementation = (
+            self.resolve_implementation(
+                self.metrics_implementations,
+                self.method,
+                self.ssimulacra2_skip,
+                self.xpsnr_skip
+            )
+        )
+
+        self.ssimulacra2_implementation = self.metric_implementation['ssimulacra2']['implementation']
+        self.ssimulacra2_skip = self.metric_implementation['ssimulacra2']['skip']
+
+        self.xpsnr_implementation = self.metric_implementation['xpsnr']['implementation']
+        self.xpsnr_skip = self.metric_implementation['xpsnr']['skip']
+
+        self.ssimu2_json_path = self.temp_dir / f"{self.input_path.stem}_ssimulacra2.json"
+        self.xpsnr_json_path = self.temp_dir / f"{self.input_path.stem}_xpsnr.json"
+
+    def stage1(self) -> None:
+        """fastpass() method alias"""
+        self.fastpass()
+
+    def stage2(self) -> None:
+        """measure_metrics() method alias"""
+        self.measure_metrics()
+
+    def stage3(self) -> None:
+        """boost() method alias"""
+        self.boost()
+
+    def stage4(self) -> None:
+        """finalpass() method alias"""
+        self.finalpass()
+
+    def run_all(self) -> None:
+        """Runs all stages of AutoBoost"""
+        self.fastpass()
+        self.measure_metrics()
+        self.boost()
+        self.finalpass()
+
+    def fastpass(self) -> None:
+        """Runs stage 1"""
+        av1an = encoders.Av1an(self.input_path, self.workers, self.video_parameters)
+        av1an.fast_pass(
+            self.fastpass_output_path,
+            self.fastpass_temp_dir,
+            self.scenes_path,
+            self.fastpass_preset,
+            self.crf
+            )
+
+    def measure_metrics(self) -> None:
+        """Runs stage 2"""
+
+        match self.method:
+            case 1:
+                self.calculate_ssimulacra2()
+            case 2:
+                self.calculate_xpsnr()
+            case 3|4:
+                self.calculate_ssimulacra2()
+                self.calculate_xpsnr()
+
+    def boost(self) -> None:
+        """Runs stage 3"""
+        self.get_ranges()
+        self.calculate_zones()
+
+    def finalpass(self) -> None:
+        """Runs stage 4"""
+        if self.zones_path is not None and not self.zones_path.exists():
+            self.zones_path = None
+
+        av1an = encoders.Av1an(self.input_path, self.workers, self.video_parameters)
+        av1an.final_pass(
+            self.output_path,
+            self.finalpass_preset,
+            self.finalpass_temp_dir,
+            self.zones_path,
+            )
+
+    def resolve_implementation(
+            self,
+            string: str,
+            method: int,
+            ssimulacra2_skip: int,
+            xpsnr_skip: int
+        ) -> dict:
+        """Handles the metric-implementation arg"""
+        implementations = string.split(",")
+        if len(implementations) < 2:
+            implementations += [""]
+
+        if method == 2:
+            ssimulacra2_index = 1
+            xpsnr_index = 0
+        else:
+            ssimulacra2_index = 0
+            xpsnr_index = 1
+
+        ssimulacra2_skip_value = ssimulacra2_skip if ssimulacra2_skip is not None else 1
+        xpsnr_skip_value = xpsnr_skip if xpsnr_skip is not None else 1
+
+        implementations_dict = {
+            "ssimulacra2": {
+                "implementation": implementations[ssimulacra2_index],
+                "skip": ssimulacra2_skip_value
+                },
+            "xpsnr": {
+                "implementation": implementations[xpsnr_index],
+                "skip": xpsnr_skip_value
+                }
+        }
+
+        # Handle SSIMULACRA2
+        if (
+            not implementations_dict["ssimulacra2"]["implementation"]
+            or implementations_dict["ssimulacra2"]["implementation"]
+            not in ("vszip", "vship", "turbo-metrics")
+            ):
+            implementations_dict["ssimulacra2"]["implementation"] = "vship"
+
+        # Handle xpsnr
+        if (
+            not implementations_dict["xpsnr"]["implementation"]
+            or implementations_dict["xpsnr"]["implementation"] not in ("vszip", "ffmpeg")
+            ):
+            implementations_dict["xpsnr"]["implementation"] = "vszip"
+
+        # Add skip for ssimulacra2 vszip
+        if (implementations_dict["ssimulacra2"]["implementation"] == "vszip"
+            and not ssimulacra2_skip):
+            implementations_dict["ssimulacra2"]["skip"] = 3
+
+        return implementations_dict
+
+    def calculate_ssimulacra2(self) -> None:
+        """Handles implementation and calls the appropriated SSIMULACRA2 calculation method"""
+
+        implementation_handlers: dict[str, list[metrics.Metrics]] = {
+            "turbo-metrics": [
+                metrics.TurboMetricsSSIMULACRA2,
+                metrics.VShipSSIMULACRA2,
+                metrics.VSzipSSIMULACRA2],
+            "vship": [
+                metrics.VShipSSIMULACRA2,
+                metrics.TurboMetricsSSIMULACRA2,
+                metrics.VSzipSSIMULACRA2],
+            "vszip": [
+                metrics.VSzipSSIMULACRA2]
+        } # pyright: ignore[reportAssignmentType]
+
+        for handler in implementation_handlers.get(
+            self.metric_implementation['ssimulacra2']['implementation']):
+            print(f"Running {handler}")
+            metric = self.init_metric(
+                self.ssimu2_json_path,
+                self.metric_implementation['ssimulacra2']['skip'],
+                handler,
+                'SSIMULACRA2'
+                )
+            returncode = metric.run()
+            if returncode == 0:
+                return None
+        raise RuntimeError("All SSIMULACRA2 metric implementations failed")
+
+    def calculate_xpsnr(self) -> None:
+        """Handles implementation and calls the appropriated XPSNR calculation method"""
+
+        implementation_handlers = {
+            'vszip': [metrics.VSzipXPSNR],
+            'ffmpeg': [metrics.FFmpegXPSNR, metrics.VSzipXPSNR]
+        }
+
+        for handler in implementation_handlers.get(
+            self.metric_implementation['xpsnr']['implementation']):
+            print(f'Running {handler}')
+            metric = self.init_metric(
+                self.xpsnr_json_path,
+                self.metric_implementation['xpsnr']['skip'],
+                handler,
+                'XPSNR'
+                )
+            returncode = metric.run()
+            if returncode == 0:
+                return None
+        raise RuntimeError("All XPSNR metric implementations failed")
+
+    def init_metric(
+            self,
+            json_path: Path,
+            skip: int,
+            metric_class,
+            metric_name: str
+            ):
+        """Initializes the metric and its progressbar"""
+        progressbar = ui.ProgressBar()
+        metric = metric_class(
+            self.input_path,
+            self.fastpass_output_path,
+            json_path,
+            skip,
+            progressbar.update_progressbar,
+            True
+            )
+
+        video_length = metric.get_length()
+
+        progressbar.initialize_progressbar(
+            total=video_length, description=f"Calculating {metric_name}")
+
+        return metric
+
+    def get_ranges(self) -> None:
+        """
+        Reads a scene file and returns a list of frame numbers for each scene change.
+
+        Args:
+            scenes (Path): scenes.json path
+
+        Returns:
+            List of ranges (int)
+        """
+
+        with open(self.scenes_path, 'r', encoding='utf-8') as file:
+            content = json.load(file)
+            for scene in content['scenes']:
+                self.ranges.append(scene['end_frame'])
+
+    def calculate_zones(self) -> None:
+        """Calcules zones with chosen method and metric"""
+        match self.method:
+            case 1 | 2:
+                if self.method == 1:
+                    metric = 'SSIMULACRA2'
+                else:
+                    metric = 'XPSNR'
+
+                metric_json_path = self.temp_dir / f'{self.input_path.stem}_{metric}.json'
+                metric_scores, skip = self.get_metric(metric_json_path, metric)
+
+                # Expand the scores list with dummy values
+                #  to the full length of the video to compensate the skip
+                metric_scores_expanded = []
+                for score in metric_scores:
+                    metric_scores_expanded += [score] + [-1] * (skip - 1)
+
+                total_scores = []
+                self.percentile_5_total = []
+                for i in range(len(self.ranges) - 1):
+                    if metric_scores_expanded[self.ranges[i]:self.ranges[i+1]]:
+                        chunk_scores_expanded = metric_scores_expanded[
+                            self.ranges[i]:self.ranges[i+1]
+                            ]
+                        # Remove the dummy values
+                        chunk_scores = [score for score in chunk_scores_expanded if score != -1]
+                        # print(chunk_scores, chunk_scores_expanded)
+                        chunk_percentile_5 = quantiles(chunk_scores, n=100)[4]
+                        self.percentile_5_total.append(chunk_percentile_5)
+                        total_scores += chunk_scores
+
+                self.average = mean(total_scores)
+
+                # print(f'{metric}')
+                # print(f'Median score: {metric_average}')
+                # print(f'5th Percentile: {metric_percentile_5}')
+                # print(f'95th Percentile: {metric_percentile_95}')
+                self.generate_zones()
+
+            case 3 | 4:
+                if self.method == 3:
+                    method_name = 'multiplied'
+                else:
+                    method_name = 'minimum'
+
+                ssimu2_json_path = self.temp_dir / f"{self.input_path.stem}_ssimulacra2.json"
+                ssimu2_scores, skip = self.get_metric(ssimu2_json_path, "SSIMULACRA2")
+                xpsnr_json_path = self.temp_dir / f"{self.input_path.stem}_xpsnr.json"
+                xpsnr_scores, _ = self.get_metric(xpsnr_json_path, "XPSNR")
+
+                if method_name == 'minimum':
+                    ssimu2_average = mean(ssimu2_scores)
+
+                ssimu2_scores_expanded = []
+                for score in ssimu2_scores:
+                    ssimu2_scores_expanded += [score] + [-1] * (skip - 1)
+
+                xpsnr_scores_expanded = []
+                for score in xpsnr_scores:
+                    xpsnr_scores_expanded += [score] + [-1] * (skip - 1)
+
+                total_scores = []
+                self.percentile_5_total = []
+                for i in range(len(self.ranges) - 1):
+                    chunk_ssimu2_scores_expanded = ssimu2_scores_expanded[
+                        self.ranges[i]:self.ranges[i+1]
+                        ]
+                    chunk_xpsnr_scores_expanded = xpsnr_scores_expanded[
+                        self.ranges[i]:self.ranges[i+1]
+                        ]
+
+                    chunk_ssimu2_scores = [
+                        score for score in chunk_ssimu2_scores_expanded if score != -1
+                        ]
+                    chunk_xpsnr_scores = [
+                        score for score in chunk_xpsnr_scores_expanded if score != -1
+                        ]
+                    chunk_scores = []
+                    for i, ssimu2_score in enumerate(chunk_ssimu2_scores):
+                        xpsnr_score = chunk_xpsnr_scores[i]
+
+                        if method_name == "multiplied":
+                            chunk_scores.append(ssimu2_score * xpsnr_score)
+                        elif method_name == "minimum":
+                            chunk_scores.append(
+                                min(ssimu2_score, ssimu2_average * xpsnr_score) # type: ignore
+                                )
+
                     total_scores += chunk_scores
+                    chunk_percentile_5 = quantiles(chunk_scores, n=100)[4]
+                    self.percentile_5_total.append(chunk_percentile_5)
 
-            metric_average, _, _ = calculate_std_dev(total_scores)
+                self.average = mean(total_scores)
 
-            # print(f'{metric}')
-            # print(f'Median score: {metric_average}')
-            # print(f'5th Percentile: {metric_percentile_5}')
-            # print(f'95th Percentile: {metric_percentile_95}')
-            generate_zones(ranges, percentile_5_total, metric_average, cq,
-                           metric_zones_txt_path, video_params, max_pos_dev, max_neg_dev,
-                           base_deviation, aggressiveness, workers)
+                # print(f'Minimum:')
+                # print(f'Median score:  {calculation_average}')
+                # print(f'5th Percentile:  {calculation_percentile_5}')
+                # print(f'95th Percentile:  {calculation_percentile_95}\n')
+                self.generate_zones()
 
-        case 3 | 4:
-            if method == 3:
-                method_name = 'multiplied'
-            else:
-                method_name = 'minimum'
 
-            ssimu2_json_path = tmp_dir / f"{src_file.stem}_ssimulacra2.json"
-            ssimu2_scores, skip = get_metric(ssimu2_json_path, "SSIMULACRA2")
-            xpsnr_json_path = tmp_dir / f"{src_file.stem}_xpsnr.json"
-            xpsnr_scores, _ = get_metric(xpsnr_json_path, "XPSNR")
+    def generate_zones(self) -> None:
+        """
+        Appends a scene change to the ``zones_txt_path`` file in Av1an zones format.
 
-            calculation_zones_txt_path = tmp_dir / f"{method_name}_zones.txt"
+        creates ``zones_txt_path`` if it does not exist. If it does exist, the line is
+        appended to the end of the file.
 
-            if method_name == 'minimum':
-                ssimu2_average, _, _ = calculate_std_dev(ssimu2_scores)
+        :param ranges: Scene changes list
+        :type ranges: list
+        :param percentile_5_total: List containing all 5th percentile scores
+        :type percentile_5_total: list
+        :param average: Full clip average score
+        :type average: int
+        :param crf: CRF setting to use for the zone
+        :type crf: int
+        :param zones_txt_path: Path to the zones.txt file
+        :type zones_txt_path: str
+        :param video_params: custom encoder params for av1an
+        :type video_params: str
+        """
+        zones_iter = 0
 
-            ssimu2_scores_expanded = []
-            for score in ssimu2_scores:
-                ssimu2_scores_expanded += [score] + [-1] * (skip - 1)
+        # If only one is set, use base deviation as the other limit
+        if self.max_positive_deviation is None:
+            self.max_positive_deviation = self.base_deviation
+        if self.max_negative_deviation is None:
+            self.max_negative_deviation = self.base_deviation
 
-            xpsnr_scores_expanded = []
-            for score in xpsnr_scores:
-                xpsnr_scores_expanded += [score] + [-1] * (skip - 1)
+        for i in range(len(self.ranges)-1):
+            zones_iter += 1
 
-            total_scores = []
-            percentile_5_total = []
-            for i in range(len(ranges) - 1):
-                chunk_ssimu2_scores_expanded = ssimu2_scores_expanded[ranges[i]:ranges[i+1]]
-                chunk_xpsnr_scores_expanded = xpsnr_scores_expanded[ranges[i]:ranges[i+1]]
+            # Calculate CRF adjustment using aggressive or normal multiplier
+            multiplier = self.aggressiveness
+            adjustment = ceil(
+                (1.0 - (self.percentile_5_total[i] / self.average)) * multiplier * 4) / 4
+            new_crf = self.crf - adjustment
 
-                chunk_ssimu2_scores = [
-                    score for score in chunk_ssimu2_scores_expanded if score != -1
-                    ]
-                chunk_xpsnr_scores = [score for score in chunk_xpsnr_scores_expanded if score != -1]
-                chunk_scores = []
-                for i, ssimu2_score in enumerate(chunk_ssimu2_scores):
-                    xpsnr_score = chunk_xpsnr_scores[i]
+            # Calculation explanation
+            # percentile5/avg give a quality % of the frame compared to average.
+            # 1 = average (Good); <1 = lower than average (bad, needs up boost);
+            # >1 = higher than average (~bad, can be reduced)
+            # 1 - percentile5/avg inverts the previous ratio so the closer to zero,
+            # the better the frame, the further to zero the worst the frame
+            # * multiplier highlights the extremes so they get more boosted,
+            # the higher the multiplier, the more the frame is boosted
+            # ceil(... * 4 ) / 4 round the adjustment to 0.25
 
-                    if method_name == "multiplied":
-                        chunk_scores.append(ssimu2_score * xpsnr_score)
-                    elif method_name == "minimum":
-                        chunk_scores.append(
-                            min(ssimu2_score, ssimu2_average * xpsnr_score) # type: ignore
-                            )
+            # Apply deviation limits
+            if adjustment < 0:  # Positive deviation (increasing CRF)
+                if self.max_positive_deviation == 0:
+                    new_crf = self.crf  # Never increase CRF if max_pos_dev is 0
+                elif abs(adjustment) > self.max_positive_deviation:
+                    new_crf = self.crf + self.max_positive_deviation
+            else:  # Negative deviation (decreasing CRF)
+                if self.max_negative_deviation == 0:
+                    new_crf = self.crf  # Never decrease CRF if max_neg_dev is 0
+                elif abs(adjustment) > self.max_negative_deviation:
+                    new_crf = self.crf - self.max_negative_deviation
 
-                total_scores += chunk_scores
-                _, chunk_percentile_5, _ = calculate_std_dev(chunk_scores)
-                percentile_5_total.append(chunk_percentile_5)
+            # print(f'Enc:  [{ranges[i]}:{ranges[i+1]}]\n'
+            #       f'Chunk 5th percentile: {percentile_5_total[i]}\n'
+            #       f'CRF adjustment: {adjustment:.2f}\n'
+            #       f'Final CRF: {new_crf:.2f}\n')
 
-            calculation_average, _, _ = calculate_std_dev(total_scores)
+            zone_params = f"--crf {new_crf:.2f}"
 
-            # print(f'Minimum:')
-            # print(f'Median score:  {calculation_average}')
-            # print(f'5th Percentile:  {calculation_percentile_5}')
-            # print(f'95th Percentile:  {calculation_percentile_95}\n')
-            generate_zones(ranges, percentile_5_total, calculation_average, cq,
-                           calculation_zones_txt_path,video_params, max_pos_dev, max_neg_dev,
-                           base_deviation,aggressiveness, workers)
+            if self.workers > 12:
+                zone_params += " --lp 2"
 
+            if self.video_parameters:  # Only append video_params if it exists and is not None
+                zone_params += f' {self.video_parameters}'
+
+            with open(self.zones_path, "w" if zones_iter == 1 else "a", encoding="utf-8") as file:
+                file.write(f"{self.ranges[i]} {self.ranges[i+1]} svt-av1 {zone_params}\n")
+
+        print(f"Auto-Boost complete\nSee '{self.zones_path}'")
+
+    def get_metric(self, json_path: Path, metric: str) -> tuple[list[float], int]:
+        """Reads from a json file and returns the metric scores and skip values"""
+        scores: list[float] = []
+
+        with open(json_path, "r", encoding="utf-8") as file:
+            content = json.load(file)
+            skip: int = content["skip"]
+            scores = content[metric]
+
+        return scores, skip
 
 def parse_args() -> argparse.Namespace:
     """Argument parser function, returns parsed args"""
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--input", required=True,
-                        help="Video input filepath (original source file)"
-                        )
+                        help="Video input filepath (original source file)")
     parser.add_argument("-t", "--temp",
                         help="The temporary directory for av1an to store files in"
                              " (Default: input filename)")
     parser.add_argument("-s", "--stage", type=int, default=0, choices=[0, 1, 2, 3, 4],
                         help="Select stage: 0: All, 1: fastpass, 2: calculate metrics,"
-                             " 3: generate zones (Default = 0)")
+                             " 3: generate zones, 4: finalpass (Default = 0)")
     parser.add_argument("-crf", type=float, default=30.0,
                         help="Base CRF (Default: 30.0)")
     parser.add_argument("-d", "--deviation", type=float, default=10.0,
@@ -371,22 +579,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-positive-dev", type=float, default=None,
                         help="Maximum allowed positive CRF deviation (Default: None)")
     parser.add_argument("--max-negative-dev", type=float, default=None,
-                        help="Maximum allowed negative CRF deviation | Default: None")
-    parser.add_argument("-p", "--preset", type=int, default=6,
-                        help="Fast encode preset (Default: 6)")
+                        help="Maximum allowed negative CRF deviation (Default: None)")
+    parser.add_argument("-p", "--preset", type=int,
+                        help="Encoding preset")
     parser.add_argument("-p1", "--fast-preset", type=int,
-                        help="Fast pass preset")
+                        help="Fast pass preset (Default: 6)")
     parser.add_argument("-p2", "--final-preset", type=int,
-                        help="Final pass preset")
+                        help="Final pass preset (Default: 4)")
     parser.add_argument("-w", "--workers", type=int, default=psutil.cpu_count(logical=False),
-                        help="Number of av1an workers (Default: Depends on physical cores number)")
+                        help="Number of av1an workers (Default: Number of physical cpu cores)")
     parser.add_argument("-S", "--skip", type=int,
                         help="Skip value, the metric is calculated every nth frames (Default: 1)")
     parser.add_argument("--ssimulacra2-skip", type=int,
                         help="SSIMULACRA2 Skip value")
     parser.add_argument("--xpsnr-skip", type=int,
                         help="XPSNR skip value")
-    parser.add_argument("-m", "--method",type=int, default=1, choices=[1, 2, 3, 4],
+    parser.add_argument("-m", "--method",type=int, default=3, choices=[1, 2, 3, 4],
                         help="Zones calculation method: 1 = SSIMU2, 2 = XPSNR,"
                         " 3 = Multiplication, 4 = Lowest Result (Default: 1)")
     parser.add_argument("-a", "--aggressiveness", type=float, default=20.0,
@@ -401,162 +609,77 @@ def parse_args() -> argparse.Namespace:
                         help="Choose encoder framework from av1an or builtin"
                         " (Not implemented yet) (Default: av1an)")
     parser.add_argument("-o", "--output",
-                        help="Output file path for final encode (Default: input directory)")
+                        help="Output file path for final encode (Default: <input>_boosted.mkv)")
+    # parser.add_argument("--verbose", action="store_true",
+    #                     help="Enables a more verbose console output (Default: not active)")
     return parser.parse_args()
-
-def resolve_implementation(
-        string: str, method: int, ssimulacra2_skip: int, xpsnr_skip: int) -> dict:
-    """Handles the metric-implementation arg"""
-    implementations = string.split(",")
-    if len(implementations) < 2:
-        implementations += [""]
-
-    if method == 2:
-        ssimulacra2_index = 1
-        xpsnr_index = 0
-    else:
-        ssimulacra2_index = 0
-        xpsnr_index = 1
-
-    ssimulacra2_skip_value = ssimulacra2_skip if ssimulacra2_skip is not None else 1
-    xpsnr_skip_value = xpsnr_skip if xpsnr_skip is not None else 1
-
-    implementations_dict = {
-        "ssimulacra2": {
-            "implementation": implementations[ssimulacra2_index], "skip": ssimulacra2_skip_value},
-        "xpsnr": {
-            "implementation": implementations[xpsnr_index], "skip": xpsnr_skip_value}
-    }
-
-    # Handle SSIMULACRA2
-    if (
-        not implementations_dict["ssimulacra2"]["implementation"]
-         or implementations_dict["ssimulacra2"]["implementation"]
-        not in ("vszip", "vship", "turbo-metrics")
-        ):
-        implementations_dict["ssimulacra2"]["implementation"] = "vship"
-
-    # Handle xpsnr
-    if (
-        not implementations_dict["xpsnr"]["implementation"]
-         or implementations_dict["xpsnr"]["implementation"] not in ("vszip", "ffmpeg")
-        ):
-        implementations_dict["xpsnr"]["implementation"] = "vszip"
-
-    # Add skip for ssimulacra2 vszip
-    if implementations_dict["ssimulacra2"]["implementation"] == "vszip" and not ssimulacra2_skip:
-        implementations_dict["ssimulacra2"]["skip"] = 3
-
-    return implementations_dict
 
 def main():
     """Main function, managing stages"""
     args = parse_args()
 
     # Directories / Files
-    src_file: Path = Path(args.input).resolve()
-    output_dir: Path = src_file.parent
+    input_path: Path = Path(args.input).resolve()
 
-    if args.temp is not None:
-        tmp_dir: Path = Path(args.temp).resolve()
-    else:
-        tmp_dir: Path = output_dir / src_file.stem
-
-    fastpass_temp_dir = tmp_dir / "fastpass"
-    finalpass_temp_dir = tmp_dir / "finalpass"
-
-    fastpass_path: Path = tmp_dir / "fastpass.mkv"
-    scenes_path: Path = tmp_dir / "scenes.json"
-
-    if args.output is not None:
-        output_file: Path = args.output
-    else:
-        output_file: Path = output_dir / f"{src_file.stem}_boosted.mkv"
+    output_path: Optional[Path] = Path(args.output) if args.output else None
+    temp_dir: Optional[Path] = Path(args.temp) if args.temp else None
 
     # Computation Parameters
     stage: int = args.stage
     method: int = args.method
     base_deviation: float = args.deviation
-    max_pos_dev: float|None = args.max_positive_dev
-    max_neg_dev: float|None = args.max_negative_dev
+    max_positive_deviation: Optional[float] = args.max_positive_dev
+    max_negative_deviation: Optional[float] = args.max_negative_dev
     aggressiveness: float = args.aggressiveness
 
-    ssimulacra2_skip = args.ssimulacra2_skip
-    xpsnr_skip = args.xpsnr_skip
-
-    if args.skip and not ssimulacra2_skip:
-        ssimulacra2_skip = args.skip
-    if args.skip and not xpsnr_skip:
-        xpsnr_skip = args.skip
-
-    metric_implementation = resolve_implementation(
-        args.metrics_implementations, method, ssimulacra2_skip, xpsnr_skip)
+    skip = args.skip if args.skip else None
+    ssimulacra2_skip = args.ssimulacra2_skip if args.ssimulacra2_skip else None
+    xpsnr_skip = args.xpsnr_skip if args.xpsnr_skip else None
 
     # Encoding Parameters
-    fast_pass_preset = args.fast_preset
-    final_pass_preset = args.final_preset
-
-    if args.preset and not fast_pass_preset:
-        fast_pass_preset = args.preset
-    if args.preset and not final_pass_preset:
-        final_pass_preset = args.preset
+    preset = args.preset if args.preset else None
+    fastpass_preset = args.fast_preset if args.fast_preset else None
+    finalpass_preset = args.final_preset if args.final_preset else None
 
     crf: float = args.crf
-    video_params: str = args.video_params
+    video_parameters: str = args.video_params
+    metrics_implementations = args.metrics_implementations
 
     # encoder_framework: str = args.encoder_framework
-
-    metric = "ssimulacra2"
-    match method:
-        case 2:
-            metric = "xpsnr"
-        case 3:
-            metric = "multiplied"
-        case 4:
-            metric = "minimum"
-
-    zones_path = tmp_dir / f'{metric}_zones.txt'
     workers: int = args.workers
 
-    if tmp_dir.exists() and stage == 1:
-        user_cancel = input(
-            "Temporary directory already exists and will be erased, continue ? [Y/n]"
-            )
-        if user_cancel.lower() not in ("y", ""):
-            exit(1)
-
-    if not src_file.is_file():
-        raise FileNotFoundError(f"File: '{str(src_file)}' doesn't exist.")
-
-    if not tmp_dir.exists or not tmp_dir.is_dir:
-        raise NotADirectoryError(f"Directory: '{str(tmp_dir)}' doens't exist or is not a directory")
+    autoboost = AutoBoost(
+        input_path,
+        output_path,
+        temp_dir,
+        workers,
+        video_parameters,
+        preset,
+        fastpass_preset,
+        finalpass_preset,
+        crf,
+        method,
+        metrics_implementations,
+        skip,
+        ssimulacra2_skip,
+        xpsnr_skip,
+        base_deviation,
+        max_positive_deviation,
+        max_negative_deviation,
+        aggressiveness,
+        )
 
     match stage:
         case 0:
-            av1an = encoders.Av1an(src_file, workers, video_params)
-            av1an.fast_pass(fastpass_path, fastpass_temp_dir, scenes_path, fast_pass_preset, crf)
-
-            ranges = get_ranges(scenes_path)
-
-            calculate_metrics(src_file, fastpass_path, tmp_dir, method, metric_implementation)
-            calculate_zones(src_file, tmp_dir, ranges, method, crf,
-                            video_params, max_pos_dev, max_neg_dev,
-                            base_deviation, aggressiveness, workers)
-
-            av1an.final_pass(output_file, finalpass_temp_dir, zones_path, final_pass_preset)
+            autoboost.run_all()
         case 1:
-            av1an = encoders.Av1an(src_file, workers, video_params)
-            av1an.fast_pass(fastpass_path, fastpass_temp_dir, scenes_path, fast_pass_preset, crf)
+            autoboost.fastpass()
         case 2:
-            calculate_metrics(src_file, fastpass_path, tmp_dir, method, metric_implementation)
+            autoboost.measure_metrics()
         case 3:
-            ranges = get_ranges(scenes_path)
-            calculate_zones(src_file, tmp_dir, ranges, method, crf,
-                            video_params, max_pos_dev, max_neg_dev,
-                            base_deviation, aggressiveness, workers)
+            autoboost.boost()
         case 4:
-            av1an = encoders.Av1an(src_file, workers, video_params)
-            av1an.final_pass(output_file, finalpass_temp_dir, zones_path, final_pass_preset)
+            autoboost.finalpass()
     return None
 
 
