@@ -595,6 +595,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--xpsnr-skip", type=int,
                         help="XPSNR skip value")
     parser.add_argument("-m", "--method",type=int, default=3, choices=[1, 2, 3, 4],
+    parser.add_argument("-m", "--method",type=int, default=3, choices=[1, 2, 3, 4],
                         help="Zones calculation method: 1 = SSIMU2, 2 = XPSNR,"
                         " 3 = Multiplication, 4 = Lowest Result (Default: 1)")
     parser.add_argument("-a", "--aggressiveness", type=float, default=20.0,
